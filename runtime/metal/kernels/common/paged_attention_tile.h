@@ -20,14 +20,19 @@ using namespace mpp::tensor_ops;
 // Prefill and verify share this device-operand page loop.
 // splash-m5 diagnostic (timing only; outputs are wrong when nonzero):
 // 1 skips softmax, 2 skips PV, 3 skips QK, 4 skips softmax and its two barriers.
-// splash-m5 A1: QK as S^T = K Q^T, so the int8 page is the untransposed left
-// operand (the scores keep their [row][token] threadgroup layout).
-#ifndef SPLASH_M5_ATTN_QK_SWAP
-#define SPLASH_M5_ATTN_QK_SWAP 0
-#endif
 // splash-m5 A4: simdgroups that run QK (its 48 x 32 output is six 16 x 16 tiles).
 #ifndef SPLASH_M5_ATTN_QK_SG
 #define SPLASH_M5_ATTN_QK_SG 8
+#endif
+// splash-m5 A6: QK as int8 x int8 -> int32. The tile's queries are quantized once
+// per threadgroup, one symmetric scale per fused row; scores = int32 * row scale
+// (the key scales stay where the placement puts them). 0 keeps bf16 x int8.
+#ifndef SPLASH_M5_ATTN_QK_INT8
+#define SPLASH_M5_ATTN_QK_INT8 0
+#endif
+// splash-m5 A5: QK with relaxed precision (PV already has it).
+#ifndef SPLASH_M5_ATTN_QK_RELAXED
+#define SPLASH_M5_ATTN_QK_RELAXED false
 #endif
 #ifndef SPLASH_M5_ATTN_DIAG
 #define SPLASH_M5_ATTN_DIAG 0
@@ -207,7 +212,8 @@ inline void splash_paged_attention_tile(
     threadgroup float *scores, threadgroup bfloat *probabilities,
     threadgroup float *row_max, threadgroup float *row_sum,
     threadgroup float *previous_scale, threadgroup atomic_uint *rescale,
-    uint thread_index) {
+    uint thread_index, threadgroup int8_t *query_stage = nullptr,
+    threadgroup float *query_scale = nullptr) {
   constexpr ushort M = RowsPerTile * QueryHeadsPerKVHead;
   constexpr bool Quantized = is_same<CacheElement, int8_t>::value;
   constexpr ushort N = SplashQ8PageTokens;
@@ -223,6 +229,31 @@ inline void splash_paged_attention_tile(
     row_max[thread_index] = -INFINITY;
     row_sum[thread_index] = 0.0f;
   }
+#if SPLASH_M5_ATTN_QK_INT8
+  if constexpr (Quantized) {
+    // Simdgroup g quantizes rows g, g + 8, ...; lane l owns 8 of the row's 256.
+    static_assert(D == 256, "");
+    const uint lane = thread_index % 32, group = thread_index / 32;
+    for (uint row = group; row < M; row += 8) {
+      float values[8];
+      float largest = 0.0f;
+#pragma unroll
+      for (uint j = 0; j < 8; ++j) {
+        values[j] = float(tile_queries[row * D + lane * 8 + j]);
+        largest = max(largest, abs(values[j]));
+      }
+      largest = simd_max(largest);
+      const float scale = largest > 0.0f ? largest / 127.0f : 1.0f;
+      const float inverse = 1.0f / scale;
+#pragma unroll
+      for (uint j = 0; j < 8; ++j)
+        query_stage[row * D + lane * 8 + j] =
+            int8_t(clamp(rint(values[j] * inverse), -127.0f, 127.0f));
+      if (lane == 0)
+        query_scale[row] = scale;
+    }
+  }
+#endif
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
   auto qt = tensor(tile_queries, dextents<int, 2>{D, M}, array<int, 2>{1, D});
@@ -237,11 +268,9 @@ inline void splash_paged_attention_tile(
   auto v0 = value_type.template slice<N, D>(0, 0);
   // QK writes a complete page score tile; PV accumulates the running output.
   // Key scaling is a precompiled placement choice; both use the same QK/PV.
-  constexpr auto qk_descriptor = SPLASH_M5_ATTN_QK_SWAP
-      ? matmul2d_descriptor(N, M, D, false, true, false,
-                            matmul2d_descriptor::mode::multiply)
-      : matmul2d_descriptor(M, N, D, false, true, false,
-                            matmul2d_descriptor::mode::multiply);
+  constexpr auto qk_descriptor =
+      matmul2d_descriptor(M, N, D, false, true, SPLASH_M5_ATTN_QK_RELAXED,
+                          matmul2d_descriptor::mode::multiply);
   constexpr auto pv_descriptor =
       matmul2d_descriptor(M, D, N, false, true, true,
                           matmul2d_descriptor::mode::multiply_accumulate);
@@ -276,39 +305,47 @@ inline void splash_paged_attention_tile(
       value_scales = value_scales_buffer + scale_index;
     }
 
-#if SPLASH_M5_ATTN_QK_SWAP
-    auto page_scores = qk.template get_destination_cooperative_tensor<
-        decltype(k0), decltype(q0), float>();
-    auto ks = kt.template slice<D, N>(0, 0);
-    if (SPLASH_M5_ATTN_DIAG != 3) qk.run(ks, q0, page_scores);
-    constexpr int TokenAxis = 1;
-    auto score_view = tensor(scores, dextents<int, 2>{M, N}, array<int, 2>{N, 1});
-    auto score_target = score_view.slice<M, N>(0, 0);
-#else
-    auto page_scores = qk.template get_destination_cooperative_tensor<
-        decltype(q0), decltype(k0), float>();
-    // One full-dimension product initializes the score CT through MPP.
     auto ks = kt.template slice<D, N>(0, 0);
     const bool qk_group = SPLASH_M5_ATTN_QK_SG == 8 || thread_index / 32 < SPLASH_M5_ATTN_QK_SG;
-    if (SPLASH_M5_ATTN_DIAG != 3 && qk_group) qk.run(q0, ks, page_scores);
-    constexpr int TokenAxis = 0;
-    auto score_target = st.slice<N, M>(0, 0);
-#endif
-    if constexpr (Quantized && !ScaleInSoftmax) {
-      const bool scores_full =
-          uint(page_scores.get_capacity()) * (8u * 32u) == uint(M) * N;
+    if constexpr (SPLASH_M5_ATTN_QK_INT8 && Quantized) {
+      auto q8t = tensor(query_stage, dextents<int, 2>{D, M}, array<int, 2>{1, D});
+      auto q8 = q8t.template slice<D, M>(0, 0);
+      auto integer_scores = qk.template get_destination_cooperative_tensor<
+          decltype(q8), decltype(k0), int32_t>();
+      if (qk_group) {
+        qk.run(q8, ks, integer_scores);
+        const bool integers_full = uint(integer_scores.get_capacity()) *
+            (SPLASH_M5_ATTN_QK_SG * 32u) == uint(M) * N;
 #pragma unroll
-      for (ushort index = 0; index < page_scores.get_capacity(); ++index) {
-        if (!scores_full && !page_scores.is_valid_element(index))
-          continue;
-        const auto coordinates = page_scores.get_multidimensional_index(index);
-        page_scores[index] *= key_scales[coordinates[TokenAxis]];
+        for (ushort index = 0; index < integer_scores.get_capacity(); ++index) {
+          if (!integers_full && !integer_scores.is_valid_element(index))
+            continue;
+          const auto coordinates = integer_scores.get_multidimensional_index(index);
+          float value = float(integer_scores[index]) * query_scale[coordinates[1]];
+          if constexpr (!ScaleInSoftmax)
+            value *= key_scales[coordinates[0]];
+          scores[coordinates[1] * N + coordinates[0]] = value;
+        }
       }
+    } else {
+      auto page_scores = qk.template get_destination_cooperative_tensor<
+          decltype(q0), decltype(k0), float>();
+      // One full-dimension product initializes the score CT through MPP.
+      if (SPLASH_M5_ATTN_DIAG != 3 && qk_group) qk.run(q0, ks, page_scores);
+      if constexpr (Quantized && !ScaleInSoftmax) {
+        const bool scores_full =
+            uint(page_scores.get_capacity()) * (8u * 32u) == uint(M) * N;
+#pragma unroll
+        for (ushort index = 0; index < page_scores.get_capacity(); ++index) {
+          if (!scores_full && !page_scores.is_valid_element(index))
+            continue;
+          const auto coordinates = page_scores.get_multidimensional_index(index);
+          page_scores[index] *= key_scales[coordinates[0]];
+        }
+      }
+      if (qk_group)
+        page_scores.store(st.slice<N, M>(0, 0));
     }
-#if !SPLASH_M5_ATTN_QK_SWAP
-    if (qk_group)
-#endif
-    page_scores.store(score_target);
     if (thread_index == 0)
       atomic_store_explicit(rescale, 0u, memory_order_relaxed);
     if (SPLASH_M5_ATTN_DIAG != 4) threadgroup_barrier(mem_flags::mem_threadgroup);

@@ -14,6 +14,15 @@
 #else
 #define SPLASH_M5_VERIFY_TILE splash_paged_attention_tile
 #endif
+#if SPLASH_M5_ATTN_QK_INT8
+#define SPLASH_M5_QK_INT8_SCRATCH                                              \
+  [[maybe_unused]] alignas(16) threadgroup int8_t query_stage[M * SplashQ8HeadDimension]; \
+  [[maybe_unused]] threadgroup float query_scale[M];
+#define SPLASH_M5_QK_INT8_ARGS , query_stage, query_scale
+#else
+#define SPLASH_M5_QK_INT8_SCRATCH
+#define SPLASH_M5_QK_INT8_ARGS
+#endif
 #if SPLASH_M5_ATTN_STAGED
 #define SPLASH_M5_STAGE_SCRATCH                                                \
   [[maybe_unused]] alignas(16) threadgroup int8_t key_stage[SplashQ8PageTokens * SplashQ8HeadDimension]; \
@@ -103,7 +112,8 @@ inline SplashQ8VerifyTile splash_q8_verify_attention_tile_at(
   threadgroup float row_sum[M];                                                \
   threadgroup float previous_scale[M];                                         \
   threadgroup atomic_uint rescale;                                             \
-  SPLASH_M5_STAGE_SCRATCH
+  SPLASH_M5_STAGE_SCRATCH                                                      \
+  SPLASH_M5_QK_INT8_SCRATCH
 
 #define Q8_VERIFY_TILE_AT(Heads, Group)                                        \
   const SplashQ8VerifyTile tile =                                              \
@@ -124,7 +134,7 @@ inline SplashQ8VerifyTile splash_q8_verify_attention_tile_at(
         tile.page_table, tile.kv_head, tile.committed_tokens, tile.active_rows,\
         tile.splits, tile.split, partials, statistics, tile.slot, scores,      \
         probabilities, row_max, row_sum, previous_scale, &rescale,             \
-        SPLASH_M5_STAGE_ARGS thread_index);                                    \
+        SPLASH_M5_STAGE_ARGS thread_index SPLASH_M5_QK_INT8_ARGS);                                    \
   }
 
 Q8_VERIFY_SPLIT(verify_attention_q8_split, 4, 6, true)
