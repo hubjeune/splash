@@ -17,7 +17,10 @@
 // output, params) and GateUp (gate stream, output, up stream, params). The
 // destination's type Out is bf16, or fp32 for a plain projection's logits
 // (ops::Projection::destination), which keeps the sum unrounded.
-template <ushort TileN, ushort Simdgroups, bool Residual, bool GateUp = false, class Out>
+// splash-m5: Rows generalises the one-lane kernel to 16/24/32 verify rows (two
+// to four lanes); the Rows == 8 kernels below are unchanged.
+template <ushort TileN, ushort Simdgroups, bool Residual, bool GateUp = false, class Out,
+          ushort Rows = 8>
 inline void q4_split(device bfloat *input, device uchar *weights,
                      device bfloat *scales, device bfloat *biases,
                      device bfloat *residual, device Out *output,
@@ -29,23 +32,23 @@ inline void q4_split(device bfloat *input, device uchar *weights,
   uint partition = simd / Simdgroups;
   for (uint tile = group; tile < p.output_size / TileN;
        tile += p.persistent_groups) {
-    q4_mpp_tile_split<TileN, GateUp, 256, true, Simdgroups, Parts>(
+    q4_mpp_tile_split<TileN, GateUp, 256, true, Simdgroups, Parts, Rows>(
         input, weights, scales, biases, partials, upWeights, upScales,
-        upBiases, p.input_size, sums + partition * 64, tile * TileN, lane,
+        upBiases, p.input_size, sums + partition * 8 * Rows, tile * TileN, lane,
         simd % Simdgroups, partition);
     // Same epilogue as q4_mpp_tile: one bf16 rounding of the projection,
     // then the residual add or the SiLU gate, then the output rounding.
-    for (uint i = simd * 32 + lane; i < 8 * TileN;
+    for (uint i = simd * 32 + lane; i < Rows * TileN;
          i += Parts * Simdgroups * 32) {
       float value = 0;
       for (uint part = 0; part < Parts; ++part)
-        value += partials[part * 8 * TileN + i];
+        value += partials[part * Rows * TileN + i];
       uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
       if constexpr (!is_same_v<Out, float>) value = float(bfloat(value));
       if constexpr (GateUp) {
         float up = 0;
         for (uint part = 0; part < Parts; ++part)
-          up += partials[(Parts + part) * 8 * TileN + i];
+          up += partials[(Parts + part) * Rows * TileN + i];
         value = value / (1.0f + fast::exp2(-1.44269504089f * value)) *
                 float(bfloat(up));
       }
@@ -125,3 +128,55 @@ kernel void decode_linear_q4_n32_split4_gate_up(
                                output, weights_1, scales_1, biases_1, params,
                                group, lane, simd, sums, partials);
 }
+
+// splash-m5: two to four lanes (16/24/32 rows) with the N32 split tile, 128
+// threads. A 5120-wide projection then runs 160 threadgroups of four K
+// partitions instead of 40 sequential N128 tiles, which is what the 17408-deep
+// down projection needs to fill 40 cores. Numerics as the one-lane form: each
+// partition sums its K range in group order; the four sums are added in
+// partition order.
+#define Q4_SPLIT_ROWS(Name, Rows, Sg)                                            \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *output [[buffer(4)]],                        \
+                   constant Q4Params &params [[buffer(5)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[4 * 8 * Rows], partials[4 * Rows * 32];             \
+    q4_split<32, Sg, false, false, bfloat, Rows>(                              \
+        input, weights, scales, biases, input, output, weights, scales,        \
+        biases, params, group, lane, simd, sums, partials);                    \
+  }
+#define Q4_SPLIT_RESIDUAL_ROWS(Name, Rows, Sg)                                   \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[4 * 8 * Rows], partials[4 * Rows * 32];             \
+    q4_split<32, Sg, true, false, bfloat, Rows>(                               \
+        input, weights, scales, biases, residual, output, weights, scales,     \
+        biases, params, group, lane, simd, sums, partials);                    \
+  }
+Q4_SPLIT_ROWS(decode_linear_q4_n32_split4_m16, 16, 1)
+Q4_SPLIT_ROWS(decode_linear_q4_n32_split4_m24, 24, 1)
+Q4_SPLIT_ROWS(decode_linear_q4_n32_split4_m32, 32, 1)
+Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m16, 16, 1)
+Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m24, 24, 1)
+Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m32, 32, 1)
+Q4_SPLIT_ROWS(decode_linear_q4_n32_split4_m16_sg8, 16, 2)
+Q4_SPLIT_ROWS(decode_linear_q4_n32_split4_m24_sg8, 24, 2)
+Q4_SPLIT_ROWS(decode_linear_q4_n32_split4_m32_sg8, 32, 2)
+Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m16_sg8, 16, 2)
+Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m24_sg8, 24, 2)
+Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m32_sg8, 32, 2)
+#undef Q4_SPLIT_ROWS
+#undef Q4_SPLIT_RESIDUAL_ROWS

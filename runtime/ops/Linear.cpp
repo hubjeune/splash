@@ -29,6 +29,15 @@ static_assert(sizeof(LinearMatrix) == 8);
 bool splitTile(LinearTile tile) noexcept {
   return tile == LinearTile::Split32 || tile == LinearTile::Split64;
 }
+// splash-m5: the N32 split kernels are also instantiated for 16/24/32 rows
+// (two to four lanes), plain and residual, when K splits into whole blocks.
+bool multiLaneSplit(LinearWorkload w, LinearTile tile) noexcept {
+  return tile == LinearTile::Split32 && w.phase == LinearPhase::Decode &&
+      w.weightLayout == WeightLayout::Affine64 &&
+      (w.rows == 16 || w.rows == 24 || w.rows == 32) &&
+      (w.epilogue == LinearEpilogue::None || w.epilogue == LinearEpilogue::Residual) &&
+      w.matrix.inputSize % kSplitInputBlock == 0;
+}
 bool oneLaneTile(LinearTile tile) noexcept {
   return tile == LinearTile::Paired128 || tile == LinearTile::Paired256 || splitTile(tile);
 }
@@ -91,7 +100,8 @@ LinearWorkload decode(LinearMatrix matrix, uint32_t lanes, LinearEpilogue epilog
 bool supportsFourSimdgroups(LinearWorkload w, LinearTile tile) noexcept {
   if (tile == LinearTile::Simdgroup) return w.phase == LinearPhase::Decode;
   if (tile == LinearTile::Split32)
-    return w.phase == LinearPhase::Decode && w.rows == SPLASH_TARGET_VERIFY_ROWS;
+    return w.phase == LinearPhase::Decode &&
+        (w.rows == SPLASH_TARGET_VERIFY_ROWS || multiLaneSplit(w, tile));
   // Only the affine paired N256 kernel is instantiated: this tile is used
   // for wide plain projections; residual and gate/up retain their own tiles.
   if (tile == LinearTile::Paired256)
@@ -208,7 +218,8 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
       (config.simdgroups == LinearSimdgroups::Four &&
        !supportsFourSimdgroups(w, config.tile)))
     throw std::invalid_argument("invalid Q4 cooperative execution scope");
-  if (const auto fixed = fixedSimdgroups(config.tile); fixed && config.simdgroups != *fixed)
+  if (const auto fixed = fixedSimdgroups(config.tile);
+      fixed && config.simdgroups != *fixed && !multiLaneSplit(w, config.tile))
     throw std::invalid_argument("Q4 tile requires its kernel's simdgroup count");
   if (w.matrix.outputSize % tileColumns())
     throw std::invalid_argument("Q4 matrix is not divisible by tile columns");
@@ -238,7 +249,8 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
   if (!config.groups || config.groups > w.matrix.outputSize / tileColumns())
     throw std::invalid_argument("invalid Q4 decode group count");
   const uint32_t lane = w.rows / SPLASH_TARGET_VERIFY_ROWS - 1;
-  if (oneLaneTile(config.tile) && (lane != 0 || w.matrix.outputSize % 256))
+  if (oneLaneTile(config.tile) && ((lane != 0 && !multiLaneSplit(w, config.tile)) ||
+                                   w.matrix.outputSize % 256))
     throw std::invalid_argument("paired or split Q4 tile requires one lane and paired columns");
   if (usesSimdgroup()) {
     const uint32_t groups = w.matrix.inputSize / kQuantGroup;
@@ -264,6 +276,20 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
                       : "decode_linear_q4_n64_split4_residual";
     } else {
       pipeline_ = n32 ? "decode_linear_q4_n32_split4" : "decode_linear_q4_n64_split4";
+    }
+    // splash-m5: the two-to-four-lane N32 split kernels (linear_q4_split.metal).
+    if (lane != 0) {
+      // Four: one simdgroup per K partition (128 threads); Eight: two (256).
+      static constexpr std::array plain{"decode_linear_q4_n32_split4_m16",
+          "decode_linear_q4_n32_split4_m24", "decode_linear_q4_n32_split4_m32"};
+      static constexpr std::array withResidual{"decode_linear_q4_n32_split4_residual_m16",
+          "decode_linear_q4_n32_split4_residual_m24", "decode_linear_q4_n32_split4_residual_m32"};
+      static constexpr std::array plain8{"decode_linear_q4_n32_split4_m16_sg8",
+          "decode_linear_q4_n32_split4_m24_sg8", "decode_linear_q4_n32_split4_m32_sg8"};
+      static constexpr std::array withResidual8{"decode_linear_q4_n32_split4_residual_m16_sg8",
+          "decode_linear_q4_n32_split4_residual_m24_sg8", "decode_linear_q4_n32_split4_residual_m32_sg8"};
+      pipeline_ = four ? (residual ? withResidual[lane - 1] : plain[lane - 1])
+                       : (residual ? withResidual8[lane - 1] : plain8[lane - 1]);
     }
     return;
   }
@@ -558,6 +584,11 @@ std::vector<LinearPlan> Linear::candidates(LinearWorkload w) const {
     if (w.epilogue == LinearEpilogue::None)
       for (const uint32_t groups : {kPaired256WaveGroupsPerCore * gpuCores_, n / 256})
         append({LinearTile::Paired256, std::min(groups, n / 256), LinearSimdgroups::Four});
+  }
+  // splash-m5: the N32 split tile for two to four lanes (plain and residual).
+  if (multiLaneSplit(w, LinearTile::Split32)) {
+    append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four});
+    append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Eight});
   }
   return result;
 }
