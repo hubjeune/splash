@@ -52,6 +52,8 @@ const std::vector<Shape> kShapes = {
     {"attn_qkv", 14336, 5120, LinearEpilogue::None},     // attention q/k/v (16)
     {"gate_up", 17408, 5120, LinearEpilogue::GateUp},    // FFN gate+up (64)
     {"ffn_gate", 17408, 5120, LinearEpilogue::None},    // FFN gate alone (B3/B4 split gate/up)
+    {"diag_res_k5120", 16640, 5120, LinearEpilogue::Residual},  // diagnostic only
+    {"diag_plain_k17408", 5120, 17408, LinearEpilogue::None},   // diagnostic only
 };
 
 std::string tileName(LinearTile t) {
@@ -154,6 +156,7 @@ struct Options {
   struct Raw { std::string name; uint32_t tileN, parts, threads = 0; };
   std::vector<Raw> raws;
   std::string baseline;
+  bool checkOnly = false;
 };
 
 std::vector<uint32_t> parseList(const std::string &s) {
@@ -232,7 +235,8 @@ std::string check(metal::MetalBackend &backend, const Variant &v, const Shape &s
 
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 
-void run(const std::string &metallib, const Options &options) {
+int run(const std::string &metallib, const Options &options) {
+  int failures = 0;
   metal::MetalBackend backend(metallib);
   const auto &device = backend.capabilities();
   Linear linear(device);
@@ -308,8 +312,9 @@ void run(const std::string &metallib, const Options &options) {
                             }});
       }
       for (const auto &raw : options.raws) {
-        if (rows != 8 || shape.epilogue == LinearEpilogue::GateUp) continue;
-        if (shape.epilogue == LinearEpilogue::None && raw.name.find("_devsums") == std::string::npos) continue;
+        if (rows != 8) continue;
+        if (shape.epilogue == LinearEpilogue::GateUp && raw.name.find("gate_up") == std::string::npos) continue;
+        if (shape.epilogue == LinearEpilogue::None && raw.name.find("_devsums") == std::string::npos && raw.name.find("_sums_") == std::string::npos) continue;
         if (shape.k % (256 * raw.parts) || shape.n % raw.tileN) {
           std::cout << "  rows " << rows << " " << raw.name << ": K or N does not divide\n";
           continue;
@@ -317,14 +322,19 @@ void run(const std::string &metallib, const Options &options) {
         const uint32_t groups = shape.n / raw.tileN, threads = raw.threads ? raw.threads : raw.parts * 32;
         // *_devsums kernels read row sums a preceding m5x_row_sums8 dispatch writes
         // (once per projection, timed with it).
-        const bool deviceSums = raw.name.find("_devsums") != std::string::npos;
+        const bool deviceSums = raw.name.find("_devsums") != std::string::npos || raw.name.find("_sums_") != std::string::npos;
         variants.push_back({raw.name + (deviceSums ? " (+sums)" : ""), raw.name, raw.parts,
                             [&, raw, groups, threads, deviceSums](metal::CommandGraph &g, uint32_t c) {
                               const auto &a = ws[c].affine();
                               if (deviceSums) {
                                 g.add("m5x_row_sums8", {b.input, b.rowSums}, Q4Params{shape.n, shape.k, 0},
                                       {shape.k / 64, 1, 1}, {256, 1, 1});
-                                if (shape.epilogue == LinearEpilogue::Residual)
+                                if (shape.epilogue == LinearEpilogue::GateUp) {
+                                  const auto &u = gs[c].affine();  // bench: gs = gate, ws = up
+                                  g.add(raw.name, {b.input, u.weights, u.scales, u.biases, b.output, a.weights,
+                                                   a.scales, a.biases, b.rowSums},
+                                        Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                                } else if (shape.epilogue == LinearEpilogue::Residual)
                                   g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output,
                                                    b.rowSums},
                                         Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
@@ -348,13 +358,21 @@ void run(const std::string &metallib, const Options &options) {
       for (size_t i = 0; i < variants.size(); ++i)
         if (!options.baseline.empty() && variants[i].label.rfind(options.baseline, 0) == 0) baseIndex = i;
       const Variant &base = variants[baseIndex];
-      for (int warm = 0; warm < 2; ++warm) (void)timeOnce(base);
+      if (!options.checkOnly)
+        for (int warm = 0; warm < 2; ++warm) (void)timeOnce(base);
       for (size_t index = 0; index < variants.size(); ++index) {
         const Variant &v = variants[index];
         std::string verdict;
         try { verdict = check(backend, v, shape, rows, ws[0], gated ? gs[0] : ws[0], b); }
         catch (const std::exception &e) {
           std::cout << "  rows " << rows << "  " << v.label << ": " << e.what() << '\n';
+          ++failures;
+          continue;
+        }
+        if (verdict.rfind("ok", 0) != 0) ++failures;
+        if (options.checkOnly) {
+          std::cout << "  rows " << std::setw(2) << rows << "  " << std::left << std::setw(24) << v.label
+                    << std::right << "  " << v.pipeline << "  " << verdict << '\n';
           continue;
         }
         std::vector<double> times, gains;
@@ -379,6 +397,8 @@ void run(const std::string &metallib, const Options &options) {
       }
     }
   }
+  std::cout << (failures ? "\nkernel-bench: " + std::to_string(failures) + " FAILED\n" : std::string("\nkernel-bench: all checks passed\n"));
+  return failures ? 1 : 0;
 }
 
 } // namespace
@@ -398,6 +418,7 @@ int main(int argc, const char *argv[]) {
         else if (a == "--pairs" && v) options.pairs = uint32_t(std::stoul(argv[++i]));
         else if (a == "--gb" && v) options.gigabytes = std::stod(argv[++i]);
         else if (a == "--candidates") options.candidates = true;
+        else if (a == "--check") { options.checkOnly = true; options.candidates = true; }
         else if (a == "--config" && v) options.configs.push_back(parseConfig(argv[++i]));
         else if (a == "--raw" && v) {
           std::vector<std::string> f; std::stringstream ss(argv[++i]); std::string item;
@@ -409,7 +430,7 @@ int main(int argc, const char *argv[]) {
         else if (a == "--baseline" && v) options.baseline = argv[++i];
         else throw std::invalid_argument("unknown option " + a);
       }
-      run(argv[1], options);
+      return run(argv[1], options);
     } catch (const std::exception &e) {
       std::cerr << "FAIL: " << e.what() << '\n';
       return 1;

@@ -129,7 +129,7 @@ bool supportsFourSimdgroups(LinearWorkload w, LinearTile tile) noexcept {
   if (tile == LinearTile::Simdgroup) return w.phase == LinearPhase::Decode;
   if (tile == LinearTile::Split32)
     return w.phase == LinearPhase::Decode &&
-        (w.rows == SPLASH_TARGET_VERIFY_ROWS || multiLaneSplit(w, tile));
+        (w.rows == SPLASH_TARGET_VERIFY_ROWS || (multiLaneSplit(w, tile) && w.rows == 16));
   if (tile == LinearTile::SplitSums32) return sumsSplit(w);
   // Only the affine paired N256 kernel is instantiated: this tile is used
   // for wide plain projections; residual and gate/up retain their own tiles.
@@ -681,7 +681,10 @@ std::vector<LinearPlan> Linear::candidates(LinearWorkload w) const {
       append(c);
   // splash-m5: the N32 split tile for two to four lanes (plain and residual).
   if (multiLaneSplit(w, LinearTile::Split32)) {
-    append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four});
+    // One simdgroup per K partition only at 16 rows: at 24/32 rows it is not
+    // deterministic under Metal shader validation on K = 5120 (FORK.md,
+    // 2026-09-26); two simdgroups per partition are.
+    if (w.rows == 16) append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four});
     append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Eight});
   }
   return result;
@@ -772,8 +775,8 @@ PreparedInput Linear::add(metal::CommandGraph &graph, LinearBuffers b,
       graph.add(std::string(selected.pipeline()),
                 {b.input, weights.weights, weights.scales, weights.biases, b.residual, b.output, b.scratch.sums},
                 Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
-    else
-      graph.add(std::string(selected.pipeline()),
+    else  // plain: bf16 or the fp32 logits destination (Name_f32)
+      graph.add(kernelInstance(selected.pipeline(), selected.destination()),
                 {b.input, weights.weights, weights.scales, weights.biases, b.output, b.scratch.sums},
                 Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
     if (stats) account(*stats, w.rows / SPLASH_TARGET_VERIFY_ROWS, 1);

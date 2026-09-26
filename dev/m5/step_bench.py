@@ -11,7 +11,7 @@ for each configuration (ABAB... over --rounds), and reports for every batch widt
 
 plus paired differences against the first configuration with a 95% interval, and
 per-pipeline attributed time for pipelines that differ. A configuration is
-LABEL=CHOICES_FILE[@METALLIB] (CHOICES_FILE "-" for none): configurations share the
+LABEL=CHOICES_FILE[@METALLIB][%VAR=VALUE,...] (CHOICES_FILE "-" for none): configurations share the
 decode-profile binary, and may bring their own metallib (kernel-only changes).
 
   dev/m5/step_bench.py --rounds 4 base=tuning/a.choices new=tuning/b.choices
@@ -23,9 +23,13 @@ PACKAGE = os.path.expanduser("~/Models/splash/swift-splash-project/output/swift1
 
 
 def run_profile(spec, prompt, cycles, binary, metallib):
+    spec, _, env_spec = spec.partition("%")
     choices, _, own_lib = spec.partition("@")
     metallib = own_lib or metallib
     env = dict(os.environ)
+    for item in filter(None, env_spec.split(",")):
+        key, _, value = item.partition("=")
+        env[key] = value
     env.pop("SPLASH_KERNEL_CHOICES", None)
     if choices != "-":
         env["SPLASH_KERNEL_CHOICES"] = os.path.abspath(choices)

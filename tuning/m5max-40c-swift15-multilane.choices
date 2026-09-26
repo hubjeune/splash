@@ -1,3 +1,5 @@
+# 2026-09-26: rows-24 split32 lines moved from 4 to 8 simdgroups (the one-simdgroup form
+# is no longer planned at 24/32 rows; FORK.md). Results recorded above used the 4 form.
 # m5max-40c-swift15.choices plus the splash-m5 multi-lane N32 split kernels for the
 # residual projections (FFN down; GDN out / attention out), 2026-09-26 kernel bench:
 # +50-98% per projection at 16/24/32 rows (two simdgroups per partition at 32 rows);
@@ -18,8 +20,8 @@
 16640   5120   8    decode  none      n128     130    8
 16640   5120   32   decode  none      n256     65     8
 5120    17408  16   decode  residual  split32  160    4
-5120    17408  24   decode  residual  split32  160    4
+5120    17408  24   decode  residual  split32  160    8
 5120    17408  32   decode  residual  split32  160    8
 5120    6144   16   decode  residual  split32  160    4
-5120    6144   24   decode  residual  split32  160    4
+5120    6144   24   decode  residual  split32  160    8
 5120    6144   32   decode  residual  split32  160    8

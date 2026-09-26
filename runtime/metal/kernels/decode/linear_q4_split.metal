@@ -134,21 +134,26 @@ kernel void decode_linear_q4_n32_split4_gate_up(
 // down projection needs to fill 40 cores. Numerics as the one-lane form: each
 // partition sums its K range in group order; the four sums are added in
 // partition order.
-#define Q4_SPLIT_ROWS(Name, Rows, Sg)                                            \
+#define Q4_SPLIT_ROWS_OUT(Name, Rows, Sg, Out)                                            \
   kernel void Name(device bfloat *input [[buffer(0)]],                         \
                    device uchar *weights [[buffer(1)]],                        \
                    device bfloat *scales [[buffer(2)]],                        \
                    device bfloat *biases [[buffer(3)]],                        \
-                   device bfloat *output [[buffer(4)]],                        \
+                   device Out *output [[buffer(4)]],                           \
                    constant Q4Params &params [[buffer(5)]],                    \
                    uint group [[threadgroup_position_in_grid]],                \
                    uint lane [[thread_index_in_simdgroup]],                    \
                    uint simd [[simdgroup_index_in_threadgroup]]) {             \
     threadgroup float sums[4 * 8 * Rows], partials[4 * Rows * 32];             \
-    q4_split<32, Sg, false, false, bfloat, Rows>(                              \
+    q4_split<32, Sg, false, false, Out, Rows>(                                 \
         input, weights, scales, biases, input, output, weights, scales,        \
         biases, params, group, lane, simd, sums, partials);                    \
   }
+// Each plain kernel into bf16 and into fp32 (Name_f32: the logits destination).
+#define Q4_SPLIT_ROWS(Name, Rows, Sg)                                          \
+  Q4_SPLIT_ROWS_OUT(Name, Rows, Sg, bfloat)                                    \
+  Q4_SPLIT_ROWS_OUT(Name##_f32, Rows, Sg, float)
+
 #define Q4_SPLIT_RESIDUAL_ROWS(Name, Rows, Sg)                                   \
   kernel void Name(device bfloat *input [[buffer(0)]],                         \
                    device uchar *weights [[buffer(1)]],                        \
@@ -178,6 +183,7 @@ Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m16_sg8, 16, 2)
 Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m24_sg8, 24, 2)
 Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m32_sg8, 32, 2)
 #undef Q4_SPLIT_ROWS
+#undef Q4_SPLIT_ROWS_OUT
 #undef Q4_SPLIT_RESIDUAL_ROWS
 
 // splash-m5 experiments (not planned by Linear; dispatched raw by kernel-bench):
@@ -476,10 +482,10 @@ kernel void decode_linear_q4_row_sums(device const bfloat *input [[buffer(0)]],
 }
 // Residual adds the auxiliary buffer; SiluGate multiplies by SiLU of it (the
 // up pass of a two-pass gate/up, as q4_mpp_tile_batched's MultiplySiluGate).
-template <ushort Rows, ushort Sg, bool Residual = true, bool SiluGate = false>
+template <ushort Rows, ushort Sg, bool Residual = true, bool SiluGate = false, class Out = bfloat>
 inline void m5_split_rows_device_sums(device bfloat *input, device uchar *weights,
                                       device bfloat *scales, device bfloat *biases,
-                                      device bfloat *residual, device bfloat *output,
+                                      device bfloat *residual, device Out *output,
                                       device const float *row_sums, constant Q4Params &p,
                                       uint group, uint lane, uint simd,
                                       threadgroup float *partials) {
@@ -493,13 +499,13 @@ inline void m5_split_rows_device_sums(device bfloat *input, device uchar *weight
       float value = 0;
       for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
       uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
-      value = float(bfloat(value));
+      if constexpr (!is_same_v<Out, float>) value = float(bfloat(value));
       if constexpr (SiluGate) {
         float gate = float(residual[index]);
         value = gate / (1.0f + fast::exp2(-1.44269504089f * gate)) * value;
       }
       if constexpr (Residual) value += float(residual[index]);
-      output[index] = bfloat(value);
+      output[index] = Out(value);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
@@ -530,23 +536,26 @@ M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m32_sg8, 32, 2)
 #undef M5_SPLIT_ROWS_SUMS
 // H13: plain (no residual) forms. Buffers: input, weights, scales, biases,
 // output, row_sums, params.
-#define M5_SPLIT_ROWS_SUMS_PLAIN(Name, Rows, Sg)                               \
+#define M5_SPLIT_ROWS_SUMS_PLAIN_OUT(Name, Rows, Sg, Out)                               \
   kernel void Name(device bfloat *input [[buffer(0)]],                         \
                    device uchar *weights [[buffer(1)]],                        \
                    device bfloat *scales [[buffer(2)]],                        \
                    device bfloat *biases [[buffer(3)]],                        \
-                   device bfloat *output [[buffer(4)]],                        \
+                   device Out *output [[buffer(4)]],                           \
                    device const float *row_sums [[buffer(5)]],                 \
                    constant Q4Params &params [[buffer(6)]],                    \
                    uint group [[threadgroup_position_in_grid]],                \
                    uint lane [[thread_index_in_simdgroup]],                    \
                    uint simd [[simdgroup_index_in_threadgroup]]) {             \
     threadgroup float partials[4 * Rows * 32];                                 \
-    m5_split_rows_device_sums<Rows, Sg, false>(input, weights, scales, biases, \
-                                               output, output, row_sums,       \
-                                               params, group, lane, simd,      \
-                                               partials);                      \
+    m5_split_rows_device_sums<Rows, Sg, false, false, Out>(input, weights,   \
+                                               scales, biases, input, output,  \
+                                               row_sums, params, group, lane,  \
+                                               simd, partials);                \
   }
+#define M5_SPLIT_ROWS_SUMS_PLAIN(Name, Rows, Sg)                               \
+  M5_SPLIT_ROWS_SUMS_PLAIN_OUT(Name, Rows, Sg, bfloat)                         \
+  M5_SPLIT_ROWS_SUMS_PLAIN_OUT(Name##_f32, Rows, Sg, float)
 M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m16, 16, 1)
 M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m24, 24, 1)
 M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m32, 32, 1)
@@ -554,6 +563,7 @@ M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m16_sg8, 16, 2)
 M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m24_sg8, 24, 2)
 M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m32_sg8, 32, 2)
 #undef M5_SPLIT_ROWS_SUMS_PLAIN
+#undef M5_SPLIT_ROWS_SUMS_PLAIN_OUT
 // H14: the up pass of a two-pass gate/up. Buffers: input, weights, scales,
 // biases, gate, output, row_sums, params.
 #define M5_SPLIT_ROWS_SUMS_UP_SILU(Name, Rows, Sg)                             \
@@ -580,3 +590,40 @@ M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m16_sg8, 16,
 M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m24_sg8, 24, 2)
 M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m32_sg8, 32, 2)
 #undef M5_SPLIT_ROWS_SUMS_UP_SILU
+
+// H15: one-lane gate/up (both streams in one threadgroup, N32, four partitions of
+// one simdgroup) reading once-per-projection row sums copied into threadgroup
+// memory. Buffers: input, gate weights/scales/biases, output, up
+// weights/scales/biases, row_sums, params. Epilogue as q4_split's GateUp.
+kernel void decode_linear_q4_n32_split4_sums_gate_up(
+    device bfloat *input [[buffer(0)]], device uchar *weights_0 [[buffer(1)]],
+    device bfloat *scales_0 [[buffer(2)]], device bfloat *biases_0 [[buffer(3)]],
+    device bfloat *output [[buffer(4)]], device uchar *weights_1 [[buffer(5)]],
+    device bfloat *scales_1 [[buffer(6)]], device bfloat *biases_1 [[buffer(7)]],
+    device const float *row_sums [[buffer(8)]], constant Q4Params &p [[buffer(9)]],
+    uint group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  constexpr uint TileN = 32, Rows = 8, Parts = 4;
+  threadgroup float sums[272 * 8], partials[2 * Parts * Rows * TileN];
+  const uint count = p.input_size / 64 * Rows;
+  for (uint i = simd * 32 + lane; i < count; i += Parts * 32) sums[i] = row_sums[i];
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
+    q4_mpp_tile_split<TileN, true, 256, true, 1, Parts, Rows, 2, true>(
+        input, weights_0, scales_0, biases_0, partials, weights_1, scales_1, biases_1,
+        p.input_size, sums, tile * TileN, lane, 0, simd);
+    for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * 32) {
+      float value = 0, up = 0;
+      for (uint part = 0; part < Parts; ++part) {
+        value += partials[part * Rows * TileN + i];
+        up += partials[(Parts + part) * Rows * TileN + i];
+      }
+      uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
+      value = float(bfloat(value));
+      value = value / (1.0f + fast::exp2(-1.44269504089f * value)) * float(bfloat(up));
+      output[index] = bfloat(value);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
