@@ -314,7 +314,15 @@ int run(const std::string &metallib, const Options &options) {
       for (const auto &raw : options.raws) {
         if (rows != 8) continue;
         if (shape.epilogue == LinearEpilogue::GateUp && raw.name.find("gate_up") == std::string::npos) continue;
-        if (shape.epilogue == LinearEpilogue::None && raw.name.find("_devsums") == std::string::npos && raw.name.find("_sums_") == std::string::npos) continue;
+        if (shape.epilogue == LinearEpilogue::None && raw.name.find("_devsums") == std::string::npos && raw.name.find("_sums") == std::string::npos) continue;
+        // A sums kernel's buffer contract follows its epilogue: never bind a
+        // residual kernel to a plain shape or the reverse (garbage parameters).
+        if (raw.name.find("_sums") != std::string::npos &&
+            (raw.name.find("residual") != std::string::npos) != (shape.epilogue == LinearEpilogue::Residual) &&
+            shape.epilogue != LinearEpilogue::GateUp) {
+          std::cout << "  rows " << rows << " " << raw.name << ": epilogue does not match shape, skipped\n";
+          continue;
+        }
         if (shape.k % (256 * raw.parts) || shape.n % raw.tileN) {
           std::cout << "  rows " << rows << " " << raw.name << ": K or N does not divide\n";
           continue;
@@ -322,7 +330,7 @@ int run(const std::string &metallib, const Options &options) {
         const uint32_t groups = shape.n / raw.tileN, threads = raw.threads ? raw.threads : raw.parts * 32;
         // *_devsums kernels read row sums a preceding m5x_row_sums8 dispatch writes
         // (once per projection, timed with it).
-        const bool deviceSums = raw.name.find("_devsums") != std::string::npos || raw.name.find("_sums_") != std::string::npos;
+        const bool deviceSums = raw.name.find("_devsums") != std::string::npos || raw.name.find("_sums") != std::string::npos;
         variants.push_back({raw.name + (deviceSums ? " (+sums)" : ""), raw.name, raw.parts,
                             [&, raw, groups, threads, deviceSums](metal::CommandGraph &g, uint32_t c) {
                               const auto &a = ws[c].affine();
