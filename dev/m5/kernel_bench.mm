@@ -20,6 +20,7 @@
 #include "metal/MetalBackend.hpp"
 #include "ops/Linear.hpp"
 #include "tuning/LinearNumerics.hpp"
+#include "metal/abi/Linear.h"
 
 #import <Foundation/Foundation.h>
 
@@ -27,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -147,6 +149,9 @@ struct Options {
   double gigabytes = 1.5;
   bool candidates = false;
   std::vector<LinearConfig> configs;
+  struct Raw { std::string name; uint32_t tileN, parts; };
+  std::vector<Raw> raws;
+  std::string baseline;
 };
 
 std::vector<uint32_t> parseList(const std::string &s) {
@@ -180,13 +185,19 @@ LinearBuffers linearBuffers(const Buffers &b, const LinearPlan &plan, LinearEpil
   return lb;
 }
 
-// Correctness of one plan: sampled columns x every row, then bitwise repeat.
-std::string check(metal::MetalBackend &backend, const Linear &linear, const LinearPlan &plan,
-                  const Shape &shape, uint32_t rows, const Projection &p, const Projection &gate,
-                  const Buffers &b) {
+// One way to encode a projection: a planned Linear configuration or a raw
+// experimental residual kernel (m5x_* in linear_q4_split.metal).
+struct Variant {
+  std::string label, pipeline;
+  uint32_t splits = 4;  // K partitions, for the error bound
+  std::function<void(metal::CommandGraph &, uint32_t copy)> encode;
+};
+
+// Correctness of one variant: sampled columns x every row, then bitwise repeat.
+std::string check(metal::MetalBackend &backend, const Variant &v, const Shape &shape, uint32_t rows,
+                  const Projection &p, const Projection &gate, const Buffers &b) {
   metal::CommandGraph graph;
-  linear.add(graph, linearBuffers(b, plan, shape.epilogue), p, plan,
-             shape.epilogue == LinearEpilogue::GateUp ? &gate : nullptr);
+  v.encode(graph, 0);
   (void)backend.submitCommand(graph.dispatches());
   const auto *out = static_cast<const uint16_t *>(b.output.contents());
   const std::vector<uint16_t> first(out, out + uint64_t(rows) * shape.n);
@@ -194,7 +205,7 @@ std::string check(metal::MetalBackend &backend, const Linear &linear, const Line
   if (std::memcmp(first.data(), out, 2ULL * rows * shape.n) != 0) return "NONDETERMINISTIC";
   const auto *x = static_cast<const uint16_t *>(b.input.contents());
   const auto *r = static_cast<const uint16_t *>(b.residual.contents());
-  const uint32_t splits = std::max<uint32_t>(plan.configuration().splits, 4);
+  const uint32_t splits = std::max<uint32_t>(v.splits, 4);
   uint32_t checked = 0;
   for (uint32_t col = 0; col < shape.n; col += 37) {
     for (uint32_t row = 0; row < rows; ++row) {
@@ -282,36 +293,69 @@ void run(const std::string &metallib, const Options &options) {
       for (const auto &plan : plans) gateBytes = std::max(gateBytes, plan.gateScratchBytes());
       b.gateScratch = backend.allocateBuffer(gateBytes);
 
-      auto timeOnce = [&](const LinearPlan &plan) {
+      std::vector<Variant> variants;
+      for (size_t i = 0; i < plans.size(); ++i) {
+        const LinearPlan plan = plans[i];
+        variants.push_back({describe(plan.configuration()) + (i == 0 ? " (default)" : ""),
+                            std::string(plan.pipeline()), plan.partialSums(),
+                            [&, plan](metal::CommandGraph &g, uint32_t c) {
+                              linear.add(g, linearBuffers(b, plan, shape.epilogue), ws[c], plan,
+                                         gated ? &gs[c] : nullptr);
+                            }});
+      }
+      for (const auto &raw : options.raws) {
+        if (rows != 8 || shape.epilogue != LinearEpilogue::Residual) continue;
+        if (shape.k % (256 * raw.parts) || shape.n % raw.tileN) {
+          std::cout << "  rows " << rows << " " << raw.name << ": K or N does not divide\n";
+          continue;
+        }
+        const uint32_t groups = shape.n / raw.tileN, threads = raw.parts * 32;
+        variants.push_back({raw.name, raw.name, raw.parts,
+                            [&, raw, groups, threads](metal::CommandGraph &g, uint32_t c) {
+                              const auto &a = ws[c].affine();
+                              g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output},
+                                    Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                            }});
+      }
+
+      auto timeOnce = [&](const Variant &v) {
         metal::CommandGraph graph;
-        for (uint32_t c = 0; c < copies; ++c)
-          linear.add(graph, linearBuffers(b, plan, shape.epilogue), ws[c], plan, gated ? &gs[c] : nullptr);
+        for (uint32_t c = 0; c < copies; ++c) v.encode(graph, c);
         return backend.submitCommand(graph.dispatches()).gpuSeconds / copies;
       };
-      const LinearPlan &base = plans[0];
+      // The reference for gains: the named --baseline variant, else the default.
+      size_t baseIndex = 0;
+      for (size_t i = 0; i < variants.size(); ++i)
+        if (!options.baseline.empty() && variants[i].label.rfind(options.baseline, 0) == 0) baseIndex = i;
+      const Variant &base = variants[baseIndex];
       for (int warm = 0; warm < 2; ++warm) (void)timeOnce(base);
-      for (size_t index = 0; index < plans.size(); ++index) {
-        const LinearPlan &plan = plans[index];
-        const std::string verdict = check(backend, linear, plan, shape, rows, ws[0], gated ? gs[0] : ws[0], b);
+      for (size_t index = 0; index < variants.size(); ++index) {
+        const Variant &v = variants[index];
+        std::string verdict;
+        try { verdict = check(backend, v, shape, rows, ws[0], gated ? gs[0] : ws[0], b); }
+        catch (const std::exception &e) {
+          std::cout << "  rows " << rows << "  " << v.label << ": " << e.what() << '\n';
+          continue;
+        }
         std::vector<double> times, gains;
-        if (index == 0) {
-          for (uint32_t i = 0; i < options.pairs; ++i) times.push_back(timeOnce(plan));
+        if (index == baseIndex) {
+          for (uint32_t i = 0; i < options.pairs; ++i) times.push_back(timeOnce(v));
         } else {
           for (uint32_t i = 0; i < options.pairs; ++i) {
             double tb, tc;
-            if (i % 2) { tc = timeOnce(plan); tb = timeOnce(base); }
-            else { tb = timeOnce(base); tc = timeOnce(plan); }
+            if (i % 2) { tc = timeOnce(v); tb = timeOnce(base); }
+            else { tb = timeOnce(base); tc = timeOnce(v); }
             times.push_back(tc); gains.push_back(tb / tc - 1);
           }
         }
         const double t = median(times);
-        std::cout << "  rows " << std::setw(2) << rows << "  " << std::left << std::setw(20)
-                  << (describe(plan.configuration()) + (index == 0 ? " (default)" : "")) << std::right
+        std::cout << "  rows " << std::setw(2) << rows << "  " << std::left << std::setw(24)
+                  << (v.label + (index == baseIndex && baseIndex ? " (baseline)" : "")) << std::right
                   << std::setw(9) << std::setprecision(3) << t * 1e3 << " ms  " << std::setw(5)
                   << std::setprecision(0) << bytesPerProjection / t / 1e9 << " GB/s  ";
-        if (index) std::cout << std::showpos << std::setprecision(1) << median(gains) * 100 << "%" << std::noshowpos << "  ";
+        if (index != baseIndex) std::cout << std::showpos << std::setprecision(1) << median(gains) * 100 << "%" << std::noshowpos << "  ";
         else std::cout << "         ";
-        std::cout << plan.pipeline() << "  " << verdict << '\n';
+        std::cout << v.pipeline << "  " << verdict << '\n';
       }
     }
   }
@@ -324,7 +368,7 @@ int main(int argc, const char *argv[]) {
     try {
       if (argc < 2) throw std::invalid_argument(
           "usage: kernel-bench METALLIB [--shapes a,b] [--rows 8,16] [--pairs N] [--gb G] "
-          "[--candidates] [--config TILE:GROUPS:SIMDGROUPS[:SPLITS]]");
+          "[--candidates] [--config TILE:GROUPS:SIMDGROUPS[:SPLITS]] [--raw KERNEL:TILEN:PARTS] [--baseline LABEL]");
       Options options;
       for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -335,6 +379,13 @@ int main(int argc, const char *argv[]) {
         else if (a == "--gb" && v) options.gigabytes = std::stod(argv[++i]);
         else if (a == "--candidates") options.candidates = true;
         else if (a == "--config" && v) options.configs.push_back(parseConfig(argv[++i]));
+        else if (a == "--raw" && v) {
+          std::vector<std::string> f; std::stringstream ss(argv[++i]); std::string item;
+          while (std::getline(ss, item, ':')) f.push_back(item);
+          if (f.size() != 3) throw std::invalid_argument("--raw KERNEL:TILEN:PARTS");
+          options.raws.push_back({f[0], uint32_t(std::stoul(f[1])), uint32_t(std::stoul(f[2]))});
+        }
+        else if (a == "--baseline" && v) options.baseline = argv[++i];
         else throw std::invalid_argument("unknown option " + a);
       }
       run(argv[1], options);

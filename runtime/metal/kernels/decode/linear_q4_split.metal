@@ -20,7 +20,7 @@
 // splash-m5: Rows generalises the one-lane kernel to 16/24/32 verify rows (two
 // to four lanes); the Rows == 8 kernels below are unchanged.
 template <ushort TileN, ushort Simdgroups, bool Residual, bool GateUp = false, class Out,
-          ushort Rows = 8>
+          ushort Rows = 8, ushort Parts = 4, ushort Depth = 2>
 inline void q4_split(device bfloat *input, device uchar *weights,
                      device bfloat *scales, device bfloat *biases,
                      device bfloat *residual, device Out *output,
@@ -28,11 +28,10 @@ inline void q4_split(device bfloat *input, device uchar *weights,
                      device bfloat *upBiases, constant Q4Params &p, uint group,
                      uint lane, uint simd, threadgroup float *sums,
                      threadgroup float *partials) {
-  constexpr uint Parts = 4;
   uint partition = simd / Simdgroups;
   for (uint tile = group; tile < p.output_size / TileN;
        tile += p.persistent_groups) {
-    q4_mpp_tile_split<TileN, GateUp, 256, true, Simdgroups, Parts, Rows>(
+    q4_mpp_tile_split<TileN, GateUp, 256, true, Simdgroups, Parts, Rows, Depth>(
         input, weights, scales, biases, partials, upWeights, upScales,
         upBiases, p.input_size, sums + partition * 8 * Rows, tile * TileN, lane,
         simd % Simdgroups, partition);
@@ -180,3 +179,38 @@ Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m24_sg8, 24, 2)
 Q4_SPLIT_RESIDUAL_ROWS(decode_linear_q4_n32_split4_residual_m32_sg8, 32, 2)
 #undef Q4_SPLIT_ROWS
 #undef Q4_SPLIT_RESIDUAL_ROWS
+
+// splash-m5 experiments (not planned by Linear; dispatched raw by kernel-bench):
+// one-lane residual split kernels with Parts K partitions of one simdgroup
+// (Parts * 32 threads) and TileN columns. K must split into whole four-group
+// blocks per partition: K % (256 * Parts) == 0.
+#define M5X_SPLIT_RESIDUAL(Name, TileN, Parts, Depth)                                \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[Parts * 64], partials[Parts * 8 * TileN];           \
+    q4_split<TileN, 1, true, false, bfloat, 8, Parts, Depth>(                  \
+        input, weights, scales, biases, residual, output, weights, scales,     \
+        biases, params, group, lane, simd, sums, partials);                    \
+  }
+M5X_SPLIT_RESIDUAL(m5x_n32_p2_residual, 32, 2, 2)
+M5X_SPLIT_RESIDUAL(m5x_n32_p6_residual, 32, 6, 2)
+M5X_SPLIT_RESIDUAL(m5x_n32_p8_residual, 32, 8, 2)
+M5X_SPLIT_RESIDUAL(m5x_n32_p12_residual, 32, 12, 2)
+M5X_SPLIT_RESIDUAL(m5x_n32_p17_residual, 32, 17, 2)
+M5X_SPLIT_RESIDUAL(m5x_n32_p24_residual, 32, 24, 2)
+M5X_SPLIT_RESIDUAL(m5x_n16_p4_residual, 16, 4, 2)
+M5X_SPLIT_RESIDUAL(m5x_n16_p8_residual, 16, 8, 2)
+M5X_SPLIT_RESIDUAL(m5x_n16_p17_residual, 16, 17, 2)
+M5X_SPLIT_RESIDUAL(m5x_n32_p4_d4_residual, 32, 4, 4)
+M5X_SPLIT_RESIDUAL(m5x_n32_p8_d4_residual, 32, 8, 4)
+M5X_SPLIT_RESIDUAL(m5x_n32_p17_d4_residual, 32, 17, 4)
+M5X_SPLIT_RESIDUAL(m5x_n32_p24_d4_residual, 32, 24, 4)
+#undef M5X_SPLIT_RESIDUAL

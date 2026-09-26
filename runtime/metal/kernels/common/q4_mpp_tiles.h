@@ -382,7 +382,7 @@ inline void q4_mpp_tile_batched(
 // rows; Rows == 8 instantiations are unchanged.
 template <ushort TileN, bool GateUp, ushort StorageN = TileN,
           bool Pipelined = true, ushort Simdgroups = 8, ushort SplitK = 4,
-          ushort Rows = 8>
+          ushort Rows = 8, ushort Depth = 2>
 inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
                               device bfloat *scales_0, device bfloat *biases_0,
                               threadgroup float *partials,
@@ -483,7 +483,29 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       threadgroup_barrier(mem_flags::mem_threadgroup);
     }
   };
-  if constexpr (Pipelined) {
+  if constexpr (Pipelined && Depth == 4) {
+    // splash-m5: four quant groups' matmuls in flight before their epilogues,
+    // applied in group order (bit-identical to Depth 2 and the sequential form).
+    uint quant_group = 0;
+    for (; quant_group + 3 < quant_groups; quant_group += 4) {
+      decltype(accumulated_0) p0, p1, p2, p3;
+      decltype(accumulated_1) q0, q1, q2, q3;
+      run_group(quant_group, p0, q0);
+      run_group(quant_group + 1, p1, q1);
+      run_group(quant_group + 2, p2, q2);
+      run_group(quant_group + 3, p3, q3);
+      finish_group(quant_group, p0, q0);
+      finish_group(quant_group + 1, p1, q1);
+      finish_group(quant_group + 2, p2, q2);
+      finish_group(quant_group + 3, p3, q3);
+    }
+    for (; quant_group < quant_groups; ++quant_group) {
+      decltype(accumulated_0) partial_0;
+      decltype(accumulated_1) partial_1;
+      run_group(quant_group, partial_0, partial_1);
+      finish_group(quant_group, partial_0, partial_1);
+    }
+  } else if constexpr (Pipelined) {
     uint quant_group = 0;
     for (; quant_group + 1 < quant_groups; quant_group += 2) {
       decltype(accumulated_0) first_0, second_0;
