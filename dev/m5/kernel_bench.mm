@@ -172,7 +172,7 @@ LinearConfig parseConfig(const std::string &s) {
 }
 
 struct Buffers {
-  metal::MetalBuffer input, output, residual, table, sums, partials, counters, gateScratch;
+  metal::MetalBuffer input, output, residual, table, sums, partials, counters, gateScratch, rowSums;
 };
 
 LinearBuffers linearBuffers(const Buffers &b, const LinearPlan &plan, LinearEpilogue epilogue) {
@@ -255,6 +255,7 @@ void run(const std::string &metallib, const Options &options) {
     b.input = backend.allocateBuffer(2ULL * maxRows * shape.k);
     b.output = backend.allocateBuffer(2ULL * maxRows * shape.n);
     b.residual = backend.allocateBuffer(2ULL * maxRows * shape.n);
+    b.rowSums = backend.allocateBuffer(4ULL * 8 * (shape.k / 64));
     auto *x = static_cast<uint16_t *>(b.input.contents());
     auto *r = static_cast<uint16_t *>(b.residual.contents());
     for (uint64_t i = 0; i < uint64_t(maxRows) * shape.k; ++i)
@@ -310,11 +311,22 @@ void run(const std::string &metallib, const Options &options) {
           continue;
         }
         const uint32_t groups = shape.n / raw.tileN, threads = raw.parts * 32;
-        variants.push_back({raw.name, raw.name, raw.parts,
-                            [&, raw, groups, threads](metal::CommandGraph &g, uint32_t c) {
+        // *_devsums kernels read row sums a preceding m5x_row_sums8 dispatch writes
+        // (once per projection, timed with it).
+        const bool deviceSums = raw.name.find("_devsums") != std::string::npos;
+        variants.push_back({raw.name + (deviceSums ? " (+sums)" : ""), raw.name, raw.parts,
+                            [&, raw, groups, threads, deviceSums](metal::CommandGraph &g, uint32_t c) {
                               const auto &a = ws[c].affine();
-                              g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output},
-                                    Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                              if (deviceSums) {
+                                g.add("m5x_row_sums8", {b.input, b.rowSums}, Q4Params{shape.n, shape.k, 0},
+                                      {shape.k / 64, 1, 1}, {256, 1, 1});
+                                g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output,
+                                                 b.rowSums},
+                                      Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                              } else {
+                                g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output},
+                                      Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                              }
                             }});
       }
 

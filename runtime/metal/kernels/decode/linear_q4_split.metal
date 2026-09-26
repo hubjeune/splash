@@ -20,7 +20,7 @@
 // splash-m5: Rows generalises the one-lane kernel to 16/24/32 verify rows (two
 // to four lanes); the Rows == 8 kernels below are unchanged.
 template <ushort TileN, ushort Simdgroups, bool Residual, bool GateUp = false, class Out,
-          ushort Rows = 8, ushort Parts = 4, ushort Depth = 2>
+          ushort Rows = 8, ushort Parts = 4, ushort Depth = 2, ushort Diag = 0>
 inline void q4_split(device bfloat *input, device uchar *weights,
                      device bfloat *scales, device bfloat *biases,
                      device bfloat *residual, device Out *output,
@@ -31,7 +31,7 @@ inline void q4_split(device bfloat *input, device uchar *weights,
   uint partition = simd / Simdgroups;
   for (uint tile = group; tile < p.output_size / TileN;
        tile += p.persistent_groups) {
-    q4_mpp_tile_split<TileN, GateUp, 256, true, Simdgroups, Parts, Rows, Depth>(
+    q4_mpp_tile_split<TileN, GateUp, 256, true, Simdgroups, Parts, Rows, Depth, false, Diag>(
         input, weights, scales, biases, partials, upWeights, upScales,
         upBiases, p.input_size, sums + partition * 8 * Rows, tile * TileN, lane,
         simd % Simdgroups, partition);
@@ -213,9 +213,172 @@ M5X_SPLIT_RESIDUAL(m5x_n32_p4_d4_residual, 32, 4, 4)
 M5X_SPLIT_RESIDUAL(m5x_n32_p8_d4_residual, 32, 8, 4)
 M5X_SPLIT_RESIDUAL(m5x_n32_p17_d4_residual, 32, 17, 4)
 M5X_SPLIT_RESIDUAL(m5x_n32_p24_d4_residual, 32, 24, 4)
+// H6: N64 tiles with one simdgroup per K partition (half the input re-reads of
+// N32, 80 threadgroups of 128 threads), with and without depth-4 pipelining.
+M5X_SPLIT_RESIDUAL(m5x_n64s1_p4_residual, 64, 4, 2)
+M5X_SPLIT_RESIDUAL(m5x_n64s1_p4_d4_residual, 64, 4, 4)
+M5X_SPLIT_RESIDUAL(m5x_n64s1_p8_residual, 64, 8, 2)
 // Planned by Linear (widerSplit): one-lane residual N32 with 8, 17 or 24 K
 // partitions of one simdgroup each (256, 544 and 768 threads).
 M5X_SPLIT_RESIDUAL(decode_linear_q4_n32_split8_residual, 32, 8, 2)
 M5X_SPLIT_RESIDUAL(decode_linear_q4_n32_split17_residual, 32, 17, 2)
 M5X_SPLIT_RESIDUAL(decode_linear_q4_n32_split24_residual, 32, 24, 2)
 #undef M5X_SPLIT_RESIDUAL
+
+// H9 experiment: one-lane residual N32 split with every quant group's input sums
+// computed once per threadgroup (all K, [group][row]) before the partitions run,
+// so the partition loops carry no input-sum work or barriers. MaxGroups bounds K
+// (272 groups = 17408, the largest Qwen3.8-27B input).
+template <ushort Parts, ushort MaxGroups = 272>
+inline void m5x_split_sums_ready(device bfloat *input, device uchar *weights,
+                                 device bfloat *scales, device bfloat *biases,
+                                 device bfloat *residual, device bfloat *output,
+                                 constant Q4Params &p, uint group, uint lane,
+                                 uint simd, threadgroup float *sums,
+                                 threadgroup float *partials) {
+  constexpr uint TileN = 32, Rows = 8;
+  const uint groups = p.input_size / 64;
+  for (uint task = simd; task < groups * Rows; task += Parts) {
+    uint g = task / Rows, row = task % Rows;
+    uint origin = row * p.input_size + g * 64 + lane;
+    float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
+    if (lane == 0) sums[g * Rows + row] = sum;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint partition = simd;
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
+    q4_mpp_tile_split<TileN, false, 256, true, 1, Parts, Rows, 2, true>(
+        input, weights, scales, biases, partials, weights, scales, biases,
+        p.input_size, sums, tile * TileN, lane, 0, partition);
+    for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * 32) {
+      float value = 0;
+      for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
+      uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
+      value = float(bfloat(value)) + float(residual[index]);
+      output[index] = bfloat(value);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+#define M5X_SUMS_READY(Name, Parts)                                            \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[272 * 8], partials[Parts * 8 * 32];                 \
+    m5x_split_sums_ready<Parts>(input, weights, scales, biases, residual,      \
+                                output, params, group, lane, simd, sums,       \
+                                partials);                                     \
+  }
+M5X_SUMS_READY(m5x_n32_p4_ps_residual, 4)
+M5X_SUMS_READY(m5x_n32_p8_ps_residual, 8)
+M5X_SUMS_READY(m5x_n32_p17_ps_residual, 17)
+#undef M5X_SUMS_READY
+
+// Diagnostics (timing only; outputs are wrong by design): Diag 1 drops the
+// scale/bias epilogue, 2 skips the matmul (no weight reads), 3 both.
+#define M5X_DIAG(Name, Parts, Diag)                                            \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[Parts * 64], partials[Parts * 8 * 32];              \
+    q4_split<32, 1, true, false, bfloat, 8, Parts, 2, Diag>(                   \
+        input, weights, scales, biases, residual, output, weights, scales,     \
+        biases, params, group, lane, simd, sums, partials);                    \
+  }
+M5X_DIAG(m5x_diag1_p4, 4, 1)
+M5X_DIAG(m5x_diag2_p4, 4, 2)
+M5X_DIAG(m5x_diag3_p4, 4, 3)
+M5X_DIAG(m5x_diag1_p17, 17, 1)
+M5X_DIAG(m5x_diag2_p17, 17, 2)
+M5X_DIAG(m5x_diag3_p17, 17, 3)
+M5X_DIAG(m5x_diag4_p4, 4, 4)
+M5X_DIAG(m5x_diag4_p17, 17, 4)
+#undef M5X_DIAG
+// D5: launch floor: the same grid and buffers, one residual copy per output.
+kernel void m5x_diag5(device bfloat *input [[buffer(0)]], device uchar *weights [[buffer(1)]],
+                      device bfloat *scales [[buffer(2)]], device bfloat *biases [[buffer(3)]],
+                      device bfloat *residual [[buffer(4)]], device bfloat *output [[buffer(5)]],
+                      constant Q4Params &params [[buffer(6)]],
+                      uint group [[threadgroup_position_in_grid]],
+                      uint tid [[thread_index_in_threadgroup]]) {
+  (void)input; (void)weights; (void)scales; (void)biases;
+  for (uint i = tid; i < 8 * 32; i += 128) {
+    uint index = (i / 32) * params.output_size + group * 32 + i % 32;
+    output[index] = residual[index];
+  }
+}
+
+// H10: one-lane row sums computed once per projection ([group][row], the same
+// simd_sum as q4_store_input_sums, so bit-identical), then split kernels that copy
+// them into threadgroup memory instead of every threadgroup recomputing them.
+// Grid: input_size / 64 threadgroups of 256 threads (one simdgroup per row).
+kernel void m5x_row_sums8(device const bfloat *input [[buffer(0)]],
+                          device float *sums [[buffer(1)]],
+                          constant Q4Params &p [[buffer(2)]],
+                          uint g [[threadgroup_position_in_grid]],
+                          uint lane [[thread_index_in_simdgroup]],
+                          uint row [[simdgroup_index_in_threadgroup]]) {
+  uint origin = row * p.input_size + g * 64 + lane;
+  float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
+  if (lane == 0) sums[g * 8 + row] = sum;
+}
+template <ushort Parts>
+inline void m5x_split_device_sums(device bfloat *input, device uchar *weights,
+                                  device bfloat *scales, device bfloat *biases,
+                                  device bfloat *residual, device bfloat *output,
+                                  device const float *row_sums, constant Q4Params &p,
+                                  uint group, uint lane, uint simd,
+                                  threadgroup float *sums, threadgroup float *partials) {
+  constexpr uint TileN = 32, Rows = 8;
+  const uint count = p.input_size / 64 * Rows;
+  for (uint i = simd * 32 + lane; i < count; i += Parts * 32) sums[i] = row_sums[i];
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
+    q4_mpp_tile_split<TileN, false, 256, true, 1, Parts, Rows, 2, true>(
+        input, weights, scales, biases, partials, weights, scales, biases,
+        p.input_size, sums, tile * TileN, lane, 0, simd);
+    for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * 32) {
+      float value = 0;
+      for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
+      uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
+      value = float(bfloat(value)) + float(residual[index]);
+      output[index] = bfloat(value);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+#define M5X_DEVICE_SUMS(Name, Parts)                                           \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   device const float *row_sums [[buffer(6)]],                 \
+                   constant Q4Params &params [[buffer(7)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[272 * 8], partials[Parts * 8 * 32];                 \
+    m5x_split_device_sums<Parts>(input, weights, scales, biases, residual,     \
+                                 output, row_sums, params, group, lane, simd,  \
+                                 sums, partials);                              \
+  }
+M5X_DEVICE_SUMS(m5x_n32_p4_devsums, 4)
+M5X_DEVICE_SUMS(m5x_n32_p8_devsums, 8)
+M5X_DEVICE_SUMS(m5x_n32_p17_devsums, 17)
+#undef M5X_DEVICE_SUMS

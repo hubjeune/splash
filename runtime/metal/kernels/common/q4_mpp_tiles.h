@@ -382,7 +382,8 @@ inline void q4_mpp_tile_batched(
 // rows; Rows == 8 instantiations are unchanged.
 template <ushort TileN, bool GateUp, ushort StorageN = TileN,
           bool Pipelined = true, ushort Simdgroups = 8, ushort SplitK = 4,
-          ushort Rows = 8, ushort Depth = 2>
+          ushort Rows = 8, ushort Depth = 2, bool SumsReady = false,
+          ushort Diag = 0>
 inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
                               device bfloat *scales_0, device bfloat *biases_0,
                               threadgroup float *partials,
@@ -432,9 +433,16 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       accumulated_1[i] = 0.0f;
   });
 
+  // splash-m5 (SumsReady): input_sums already holds every quant group's row sums,
+  // [group][row] for all of K, written once per threadgroup by the caller.
+  if constexpr (!SumsReady && Diag != 4)
   q4_store_input_sums<Rows, Simdgroups>(input, input_size, first_group * 64,
                                      input_sums, 0, simd_lane, simd_group);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  // splash-m5: a one-simdgroup partition writes and reads only its own sums,
+  // so it need not wait for the other partitions (no lockstep across K ranges).
+  if constexpr (SumsReady) {
+  } else if constexpr (Simdgroups == 1) simdgroup_barrier(mem_flags::mem_threadgroup);
+  else threadgroup_barrier(mem_flags::mem_threadgroup);
   auto run_group = [&](uint quant_group,
                        thread decltype(accumulated_0) &partial_0,
                        thread decltype(accumulated_1) &partial_1) {
@@ -445,7 +453,8 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
     tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b0(
         group_weights_0, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
     auto b0_slice = b0.slice<64, TileN>(0, 0);
-    operation.run(a_slice, b0_slice, partial_0);
+    // splash-m5 diagnostics: Diag 2/3 skip the matmul (no weight reads).
+    if constexpr (Diag != 2 && Diag != 3 && Diag != 4) operation.run(a_slice, b0_slice, partial_0);
     device uchar *group_weights_1 =
         tile_weights_1 + (ulong(quant_group) * StorageN + tile_offset) * 64 / 2;
     tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b1(
@@ -464,8 +473,13 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       ulong parameter =
           (ulong(tile) * total_quant_groups + first_group + quant_group) *
               StorageN + tile_offset + index[0];
-      uint sum_offset =
-          ((quant_group >> 2) & 1) * (4 * Rows) + (quant_group & 3) * Rows;
+      uint sum_offset = SumsReady
+          ? (first_group + quant_group) * Rows
+          : ((quant_group >> 2) & 1) * (4 * Rows) + (quant_group & 3) * Rows;
+      // splash-m5 diagnostics: Diag 1/3 drop the scale/bias epilogue (and its loads).
+      if constexpr (Diag == 1 || Diag == 3 || Diag == 4)
+        accumulated_0[i] += (Diag >= 3 ? 0.0f : partial_0[i]) + input_sums[sum_offset + row];
+      else
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
           input_sums[sum_offset + row] * float(biases_0[parameter]);
@@ -475,12 +489,13 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
             input_sums[sum_offset + row] * float(biases_1[parameter]);
       }
     });
-    if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+    if (!SumsReady && Diag != 4 && (quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
       uint next_group = (quant_group + 1) >> 2;
       q4_store_input_sums<Rows, Simdgroups>(
           input, input_size, (first_group + quant_group) * 64 + 64, input_sums,
           (next_group & 1) * (4 * Rows), simd_lane, simd_group);
-      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if constexpr (Simdgroups == 1) simdgroup_barrier(mem_flags::mem_threadgroup);
+      else threadgroup_barrier(mem_flags::mem_threadgroup);
     }
   };
   if constexpr (Pipelined && Depth == 4) {
