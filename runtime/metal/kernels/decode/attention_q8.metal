@@ -1,3 +1,7 @@
+// splash-m5 A4: QK simdgroups by shape (paged_attention_tile.h; bit-identical).
+#ifndef SPLASH_M5_ATTN_QK_SG
+#define SPLASH_M5_ATTN_QK_SG 0
+#endif
 #include "metal/kernels/common/paged_attention_tile.h"
 
 // splash-m5 A2 (experiment): two pages per iteration in the verify split tile.

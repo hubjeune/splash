@@ -20,7 +20,8 @@ using namespace mpp::tensor_ops;
 // Prefill and verify share this device-operand page loop.
 // splash-m5 diagnostic (timing only; outputs are wrong when nonzero):
 // 1 skips softmax, 2 skips PV, 3 skips QK, 4 skips softmax and its two barriers.
-// splash-m5 A4: simdgroups that run QK (its 48 x 32 output is six 16 x 16 tiles).
+// splash-m5 A4: simdgroups that run QK. 0 picks by shape: 4 for six query heads per
+// KV head (a 48 x 32 score tile, Qwen3.8-27B: -3%), 8 otherwise (Qwen3.6-35B lost 3% at 4).
 #ifndef SPLASH_M5_ATTN_QK_SG
 #define SPLASH_M5_ATTN_QK_SG 8
 #endif
@@ -274,7 +275,9 @@ inline void splash_paged_attention_tile(
   constexpr auto pv_descriptor =
       matmul2d_descriptor(M, D, N, false, true, true,
                           matmul2d_descriptor::mode::multiply_accumulate);
-  matmul2d<qk_descriptor, execution_simdgroups<SPLASH_M5_ATTN_QK_SG>> qk;
+  constexpr uint QkSimdgroups = SPLASH_M5_ATTN_QK_SG ? SPLASH_M5_ATTN_QK_SG
+                                : (QueryHeadsPerKVHead == 6 ? 4 : 8);
+  matmul2d<qk_descriptor, execution_simdgroups<QkSimdgroups>> qk;
   matmul2d<pv_descriptor, execution_simdgroups<8>> pv;
   auto running = pv.template get_destination_cooperative_tensor<
       decltype(p0), decltype(v0), float>();
@@ -306,7 +309,7 @@ inline void splash_paged_attention_tile(
     }
 
     auto ks = kt.template slice<D, N>(0, 0);
-    const bool qk_group = SPLASH_M5_ATTN_QK_SG == 8 || thread_index / 32 < SPLASH_M5_ATTN_QK_SG;
+    const bool qk_group = QkSimdgroups == 8 || thread_index / 32 < QkSimdgroups;
     if constexpr (SPLASH_M5_ATTN_QK_INT8 && Quantized) {
       auto q8t = tensor(query_stage, dextents<int, 2>{D, M}, array<int, 2>{1, D});
       auto q8 = q8t.template slice<D, M>(0, 0);
@@ -315,7 +318,7 @@ inline void splash_paged_attention_tile(
       if (qk_group) {
         qk.run(q8, ks, integer_scores);
         const bool integers_full = uint(integer_scores.get_capacity()) *
-            (SPLASH_M5_ATTN_QK_SG * 32u) == uint(M) * N;
+            (QkSimdgroups * 32u) == uint(M) * N;
 #pragma unroll
         for (ushort index = 0; index < integer_scores.get_capacity(); ++index) {
           if (!integers_full && !integer_scores.is_valid_element(index))
