@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380">
+<style>
+  .bg{fill:#ffffff} .t{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .l{fill:#57606a;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .v{fill:#1f2328;font:11px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .g{stroke:#d0d7de;stroke-width:1} .s0{fill:#8c959f} .s1{fill:#0969da} .s2{fill:#1a7f37} .s3{fill:#bf8700}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117} .t,.v{fill:#e6edf3} .l{fill:#8d96a0} .g{stroke:#30363d}
+    .s0{fill:#6e7681} .s1{fill:#4493f8} .s2{fill:#3fb950} .s3{fill:#d29922}}
+</style>
+<rect class="bg" width="760" height="380" rx="8"/>
+<text class="t" x="60" y="28">Inco's Qwen3.8-27B: stock vs splash-m5 (sampled)</text>
+<line class="g" x1="60" x2="740" y1="310.0" y2="310.0"/>
+<text class="l" x="52" y="314.0" text-anchor="end">0</text>
+<line class="g" x1="60" x2="740" y1="246.5" y2="246.5"/>
+<text class="l" x="52" y="250.5" text-anchor="end">100</text>
+<line class="g" x1="60" x2="740" y1="183.0" y2="183.0"/>
+<text class="l" x="52" y="187.0" text-anchor="end">200</text>
+<line class="g" x1="60" x2="740" y1="119.5" y2="119.5"/>
+<text class="l" x="52" y="123.5" text-anchor="end">300</text>
+<line class="g" x1="60" x2="740" y1="56.0" y2="56.0"/>
+<text class="l" x="52" y="60.0" text-anchor="end">400</text>
+<text class="l" x="14" y="183.0" transform="rotate(-90 14 183.0)" text-anchor="middle">aggregate tok/s</text>
+<rect class="s0" x="99.0" y="263.1" width="43.0" height="46.9" rx="2"/>
+<text class="v" x="120.5" y="259.1" text-anchor="middle">74</text>
+<rect class="s1" x="145.0" y="252.5" width="43.0" height="57.5" rx="2"/>
+<text class="v" x="166.5" y="248.5" text-anchor="middle">90</text>
+<text class="l" x="145.0" y="328" text-anchor="middle">1 request</text>
+<rect class="s0" x="269.0" y="234.9" width="43.0" height="75.1" rx="2"/>
+<text class="v" x="290.5" y="230.9" text-anchor="middle">118</text>
+<rect class="s1" x="315.0" y="213.9" width="43.0" height="96.1" rx="2"/>
+<text class="v" x="336.5" y="209.9" text-anchor="middle">151</text>
+<text class="l" x="315.0" y="328" text-anchor="middle">2 requests</text>
+<rect class="s0" x="439.0" y="230.7" width="43.0" height="79.3" rx="2"/>
+<text class="v" x="460.5" y="226.7" text-anchor="middle">125</text>
+<rect class="s1" x="485.0" y="201.3" width="43.0" height="108.7" rx="2"/>
+<text class="v" x="506.5" y="197.3" text-anchor="middle">171</text>
+<text class="l" x="485.0" y="328" text-anchor="middle">3 requests</text>
+<rect class="s0" x="609.0" y="206.2" width="43.0" height="103.8" rx="2"/>
+<text class="v" x="630.5" y="202.2" text-anchor="middle">163</text>
+<rect class="s1" x="655.0" y="177.5" width="43.0" height="132.5" rx="2"/>
+<text class="v" x="676.5" y="173.5" text-anchor="middle">209</text>
+<text class="l" x="655.0" y="328" text-anchor="middle">4 requests</text>
+<rect class="s0" x="60" y="350" width="12" height="12" rx="2"/>
+<text class="l" x="78" y="360">stock 1.1.0</text>
+<rect class="s1" x="167" y="350" width="12" height="12" rx="2"/>
+<text class="l" x="185" y="360">splash-m5</text>
+<text class="l" x="740" y="360" text-anchor="end">temperature 1.0, top_p 0.95, top_k 20</text>
+</svg>

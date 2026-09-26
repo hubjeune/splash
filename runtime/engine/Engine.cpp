@@ -1,6 +1,8 @@
 #include "engine/Engine.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -1310,6 +1312,17 @@ void Engine::apply(const BatchPlan &plan,
     if (plan.kind == WorkKind::Decode) {
       draftedTokens += result.draftedTokens;
       acceptedDraftTokens += result.acceptedDraftTokens;
+      // splash-m5: SPLASH_M5_ACCEPT_LOG=PATH appends "lanes drafted accepted" per request
+      // per decode step, for the acceptance-length histogram (draft-length study).
+      static FILE *acceptLog = [] {
+        const char *path = std::getenv("SPLASH_M5_ACCEPT_LOG");
+        return path && *path ? std::fopen(path, "a") : nullptr;
+      }();
+      if (acceptLog) {
+        std::fprintf(acceptLog, "%u %u %u\n", plan.width(), result.draftedTokens,
+                     result.acceptedDraftTokens);
+        std::fflush(acceptLog);
+      }
       // A terminal anchor is emitted without a target KV row; it never enters
       // a cached block.
       const uint32_t storedTokens =
