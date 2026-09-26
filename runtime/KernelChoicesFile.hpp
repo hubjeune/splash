@@ -9,7 +9,8 @@
 //   5120 17408 8   decode  residual  split32  160     4
 //
 // phase: prefill | decode.  epilogue: none | residual | gateup | upwithgate.
-// tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup | splitsums32.
+// tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup | splitsums32 |
+//       ggufstaged | ggufregister (these two key GGUF / block-quantized workloads).
 // Only the Affine64 weight layout is covered (the layout of Splash packages
 // and MLX 4-bit checkpoints). Any malformed line fails startup loudly.
 
@@ -47,7 +48,8 @@ inline ops::OperatorChoices loadKernelChoices(const std::string &path) {
       {"n128", LinearTile::N128}, {"n256", LinearTile::N256},
       {"paired128", LinearTile::Paired128}, {"split32", LinearTile::Split32},
       {"split64", LinearTile::Split64}, {"paired256", LinearTile::Paired256},
-      {"simdgroup", LinearTile::Simdgroup}, {"splitsums32", LinearTile::SplitSums32}};
+      {"simdgroup", LinearTile::Simdgroup}, {"splitsums32", LinearTile::SplitSums32},
+      {"ggufstaged", LinearTile::GgufStaged}, {"ggufregister", LinearTile::GgufRegister}};
 
   std::ifstream file(path);
   if (!file) throw std::runtime_error("cannot read kernel choices file " + path);
@@ -74,6 +76,9 @@ inline ops::OperatorChoices loadKernelChoices(const std::string &path) {
     choice.workload.phase = detail::lookup(phase, phases, where);
     choice.workload.epilogue = detail::lookup(epilogue, epilogues, where);
     choice.configuration.tile = detail::lookup(tile, tiles, where);
+    // GGUF tiles key block-quantized (GGUF) workloads.
+    if (choice.configuration.tile == LinearTile::GgufStaged || choice.configuration.tile == LinearTile::GgufRegister)
+      choice.workload.weightLayout = WeightLayout::Block32;
     choice.configuration.groups = groups;
     choice.configuration.simdgroups = static_cast<LinearSimdgroups>(simdgroups);
     choice.configuration.splits = splits;

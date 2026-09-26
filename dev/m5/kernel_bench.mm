@@ -20,6 +20,7 @@
 #include "metal/MetalBackend.hpp"
 #include "ops/Linear.hpp"
 #include "tuning/LinearNumerics.hpp"
+#include "tests/engine/GgufFormatReference.hpp"
 #include "metal/abi/Linear.h"
 
 #import <Foundation/Foundation.h>
@@ -66,12 +67,15 @@ std::string tileName(LinearTile t) {
   case LinearTile::Paired256: return "paired256";
   case LinearTile::Simdgroup: return "simdgroup";
   case LinearTile::SplitSums32: return "splitsums32";
+  case LinearTile::GgufStaged: return "ggufstaged";
+  case LinearTile::GgufRegister: return "ggufregister";
   default: return "other";
   }
 }
 LinearTile tileFrom(const std::string &s) {
   for (auto t : {LinearTile::N128, LinearTile::N256, LinearTile::Paired128, LinearTile::Split32,
-                 LinearTile::Split64, LinearTile::Paired256, LinearTile::Simdgroup, LinearTile::SplitSums32})
+                 LinearTile::Split64, LinearTile::Paired256, LinearTile::Simdgroup, LinearTile::SplitSums32,
+                 LinearTile::GgufStaged, LinearTile::GgufRegister})
     if (tileName(t) == s) return t;
   throw std::invalid_argument("unknown tile " + s);
 }
@@ -98,6 +102,27 @@ Projection makeWeights(metal::MetalBackend &backend, LinearMatrix shape, uint32_
     b[i] = floatToBf16(-float(hash(uint32_t(i) + seed + 11) % 16) * bf16ToFloat(s[i]));
   }
   return p;
+}
+
+// GGUF (block) weights built with Splash's own fixture (dev/tests/engine/
+// GgufFormatReference.hpp): random native GGUF rows, repacked into the prepared
+// planes the kernels read. The native rows stay for the fp64 reference.
+struct GgufWeights { Projection projection; std::vector<uint8_t> native; };
+std::mt19937 ggufRng{20260926};
+GgufWeights makeGguf(metal::MetalBackend &backend, gguf_reference::Fmt f, uint32_t n, uint32_t k) {
+  using namespace gguf_reference;
+  std::vector<uint8_t> native = makeNative(f, n, k, ggufRng);
+  const Packed planes = repack(f, native, n, k, nullptr);
+  const auto upload = [&](const std::vector<uint8_t> &bytes) {
+    metal::MetalBuffer buffer = backend.allocateBuffer(bytes.size());
+    std::memcpy(buffer.contents(), bytes.data(), bytes.size());
+    return buffer;
+  };
+  BlockWeights blocks;
+  blocks.segments.push_back(QuantizedSegment::planes(
+      f, n, k, upload(planes.w0), kQuantFormats[f].plane1_bytes ? upload(planes.w1) : metal::MetalBuffer{},
+      upload(planes.meta)));
+  return {Projection(n, k, std::move(blocks)), std::move(native)};
 }
 
 // fp64 reference and bound, as in dev/tests/engine/q4_sgmatrix_metal_test.mm.
@@ -157,6 +182,7 @@ struct Options {
   std::vector<Raw> raws;
   std::string baseline;
   bool checkOnly = false;
+  std::string gguf;  // GGUF format name (e.g. q8_0): block weights instead of affine Q4
 };
 
 std::vector<uint32_t> parseList(const std::string &s) {
@@ -186,7 +212,8 @@ LinearBuffers linearBuffers(const Buffers &b, const LinearPlan &plan, LinearEpil
   lb.output = b.output;
   if (epilogue == LinearEpilogue::Residual) lb.residual = b.residual;
   if (plan.gateScratchBytes()) lb.gateScratch = b.gateScratch;
-  if (plan.usesSimdgroup() || plan.configuration().tile == LinearTile::SplitSums32)
+  if (plan.usesSimdgroup() || plan.configuration().tile == LinearTile::SplitSums32 ||
+      plan.workload().weightLayout == WeightLayout::Block32)
     lb.scratch = LinearScratch{b.table, b.sums, b.partials, b.counters};
   return lb;
 }
@@ -200,8 +227,9 @@ struct Variant {
 };
 
 // Correctness of one variant: sampled columns x every row, then bitwise repeat.
+using ReferenceOf = std::function<Reference(bool gate, uint32_t row, uint32_t col, uint32_t splits)>;
 std::string check(metal::MetalBackend &backend, const Variant &v, const Shape &shape, uint32_t rows,
-                  const Projection &p, const Projection &gate, const Buffers &b) {
+                  const ReferenceOf &referenceOf, const Buffers &b) {
   metal::CommandGraph graph;
   v.encode(graph, 0);
   (void)backend.submitCommand(graph.dispatches());
@@ -209,7 +237,6 @@ std::string check(metal::MetalBackend &backend, const Variant &v, const Shape &s
   const std::vector<uint16_t> first(out, out + uint64_t(rows) * shape.n);
   (void)backend.submitCommand(graph.dispatches());
   if (std::memcmp(first.data(), out, 2ULL * rows * shape.n) != 0) return "NONDETERMINISTIC";
-  const auto *x = static_cast<const uint16_t *>(b.input.contents());
   const auto *r = static_cast<const uint16_t *>(b.residual.contents());
   const uint32_t splits = std::max<uint32_t>(v.splits, 4);
   uint32_t checked = 0;
@@ -217,10 +244,8 @@ std::string check(metal::MetalBackend &backend, const Variant &v, const Shape &s
     for (uint32_t row = 0; row < rows; ++row) {
       const uint64_t i = uint64_t(row) * shape.n + col;
       Reference gateRef{};
-      if (shape.epilogue == LinearEpilogue::GateUp)
-        gateRef = reference(exact(gate, x, row, col), shape.k / 64, splits);
-      const auto ref = withEpilogue(reference(exact(p, x, row, col), shape.k / 64, splits),
-                                    shape.epilogue, bf16ToFloat(r[i]), gateRef);
+      if (shape.epilogue == LinearEpilogue::GateUp) gateRef = referenceOf(true, row, col, splits);
+      const auto ref = withEpilogue(referenceOf(false, row, col, splits), shape.epilogue, bf16ToFloat(r[i]), gateRef);
       if (!within(ref, first[i])) {
         std::ostringstream o;
         o << "FAIL row " << row << " col " << col << " actual " << bf16ToFloat(first[i])
@@ -248,14 +273,29 @@ int run(const std::string &metallib, const Options &options) {
       continue;
     const LinearMatrix matrix{shape.n, shape.k};
     const bool gated = shape.epilogue == LinearEpilogue::GateUp;
+    const bool gguf = !options.gguf.empty();
+    const gguf_reference::Fmt format = gguf ? gguf_reference::fmtNamed(options.gguf) : gguf_reference::Fmt{};
     const double bytesPerProjection =
-        (double(shape.n) * shape.k / 2 + double(shape.n) * (shape.k / 64) * 4) * (gated ? 2 : 1);
+        (gguf ? double(gguf_reference::rowBytes(format, shape.k)) * shape.n
+              : double(shape.n) * shape.k / 2 + double(shape.n) * (shape.k / 64) * 4) * (gated ? 2 : 1);
     const uint32_t copies = std::clamp<uint32_t>(
         uint32_t(std::ceil(options.gigabytes * 1e9 / bytesPerProjection)), 4, 96);
     std::vector<Projection> ws, gs;
+    std::vector<uint8_t> nativeUp, nativeGate;  // copy 0's GGUF rows, for the reference
     for (uint32_t c = 0; c < copies; ++c) {
-      ws.push_back(makeWeights(backend, matrix, 31 + c));
-      if (gated) gs.push_back(makeWeights(backend, matrix, 177 + c));
+      if (gguf) {
+        GgufWeights up = makeGguf(backend, format, shape.n, shape.k);
+        if (c == 0) nativeUp = up.native;
+        ws.push_back(std::move(up.projection));
+        if (gated) {
+          GgufWeights gate = makeGguf(backend, format, shape.n, shape.k);
+          if (c == 0) nativeGate = gate.native;
+          gs.push_back(std::move(gate.projection));
+        }
+      } else {
+        ws.push_back(makeWeights(backend, matrix, 31 + c));
+        if (gated) gs.push_back(makeWeights(backend, matrix, 177 + c));
+      }
     }
     const uint32_t maxRows = *std::max_element(options.rows.begin(), options.rows.end());
     Buffers b;
@@ -273,8 +313,9 @@ int run(const std::string &metallib, const Options &options) {
               << " weight copies (" << std::fixed << std::setprecision(2)
               << copies * bytesPerProjection / 1e9 << " GB) ==\n";
     for (uint32_t rows : options.rows) {
-      const LinearWorkload w{matrix, rows, LinearPhase::Decode, shape.epilogue};
-      std::vector<LinearPlan> plans{linear.plan(w)};
+      const LinearWorkload w{matrix, rows, LinearPhase::Decode, shape.epilogue,
+                             gguf ? WeightLayout::Block32 : WeightLayout::Affine64};
+      std::vector<LinearPlan> plans{gguf ? linear.plan(w, ws[0], gated ? &gs[0] : nullptr) : linear.plan(w)};
       if (options.candidates)
         for (const auto &c : linear.candidates(w))
           if (!(c.configuration() == plans[0].configuration())) plans.push_back(c);
@@ -312,6 +353,7 @@ int run(const std::string &metallib, const Options &options) {
                             }});
       }
       for (const auto &raw : options.raws) {
+        if (gguf) break;  // raw kernels bind affine weights
         // One-lane raws, or multi-lane raws named _m<rows>.
         if (rows != 8 && raw.name.find("_m" + std::to_string(rows)) == std::string::npos) continue;
         if (rows == 8 && raw.name.find("_m16") != std::string::npos) continue;
@@ -378,7 +420,26 @@ int run(const std::string &metallib, const Options &options) {
       for (size_t index = 0; index < variants.size(); ++index) {
         const Variant &v = variants[index];
         std::string verdict;
-        try { verdict = check(backend, v, shape, rows, ws[0], gated ? gs[0] : ws[0], b); }
+        const auto *x = static_cast<const uint16_t *>(b.input.contents());
+        std::map<std::pair<bool, uint32_t>, std::vector<float>> rowCache;  // decoded GGUF rows
+        const ReferenceOf referenceOf = [&](bool isGate, uint32_t row, uint32_t col, uint32_t splits) {
+          if (!gguf)
+            return reference(exact(isGate ? gs[0] : ws[0], x, row, col), shape.k / 64, splits);
+          using namespace gguf_reference;
+          auto &wv = rowCache[{isGate, col}];
+          if (wv.empty()) {
+            wv.resize(shape.k);
+            const auto &native = isGate ? nativeGate : nativeUp;
+            rowValues(format, native.data() + uint64_t(col) * rowBytes(format, shape.k), shape.k, wv.data());
+          }
+          std::vector<float> xv(shape.k);
+          for (uint32_t kk = 0; kk < shape.k; ++kk) xv[kk] = bf16ToFloat(x[uint64_t(row) * shape.k + kk]);
+          const Dot d = dot(xv.data(), wv.data(), shape.k);
+          // The staged tile's bound (it is the larger), then the bf16 rounding.
+          return Reference{double(bf16ToFloat(floatToBf16(float(d.value)))),
+                           projectionBound(d, true) + ulpBf16(float(d.value))};
+        };
+        try { verdict = check(backend, v, shape, rows, referenceOf, b); }
         catch (const std::exception &e) {
           std::cout << "  rows " << rows << "  " << v.label << ": " << e.what() << '\n';
           ++failures;
@@ -443,6 +504,7 @@ int main(int argc, const char *argv[]) {
                                   f.size() == 4 ? uint32_t(std::stoul(f[3])) : 0u});
         }
         else if (a == "--baseline" && v) options.baseline = argv[++i];
+        else if (a == "--gguf" && v) options.gguf = argv[++i];
         else throw std::invalid_argument("unknown option " + a);
       }
       return run(argv[1], options);

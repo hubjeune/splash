@@ -601,8 +601,10 @@ LinearPlan Linear::plan(LinearWorkload w, const Projection &p, const Projection 
 void Linear::setChoices(std::span<const LinearChoice> choices) {
   std::vector<LinearChoice> pending(choices.begin(), choices.end());
   for (const auto &choice : pending) {
-    if (choice.workload.weightLayout == WeightLayout::Block32)
-      throw std::invalid_argument("block projection plans are not tuned");
+    // splash-m5: block (GGUF) decode plans are tunable too; the plan
+    // constructor validates the configuration (requireBlockConfiguration).
+    if (choice.workload.weightLayout == WeightLayout::Block32 && choice.workload.phase != LinearPhase::Decode)
+      throw std::invalid_argument("block prefill plans are not tuned");
     (void)plan(choice.workload, choice.configuration);
   }
   sortUniqueChoices(pending);
@@ -613,7 +615,24 @@ std::vector<LinearPlan> Linear::candidates(LinearWorkload w) const {
   std::vector<LinearPlan> result;
   result.reserve(kMaximumCandidates);
   result.push_back(LinearPlan(w, baseline(w)));
-  if (w.weightLayout == WeightLayout::Block32) return result;
+  if (w.weightLayout == WeightLayout::Block32) {
+    // splash-m5: block decode candidates. The staged tile with every legal K
+    // split (the device rule's split tiers were fitted on 16/20-core GPUs),
+    // and the register tile with its legal splits (the Apple9 default).
+    if (w.phase != LinearPhase::Decode) return result;
+    const uint32_t n = w.matrix.outputSize, k = w.matrix.inputSize;
+    const auto add = [&](LinearConfig config) {
+      for (const auto &existing : result)
+        if (existing.configuration() == config) return;
+      try { result.push_back(LinearPlan(w, config)); } catch (const std::invalid_argument &) {}
+    };
+    for (const uint32_t splits : {1u, 2u, 4u, 8u}) {
+      add({LinearTile::GgufStaged, n / GGUF_TILE_COLUMNS, LinearSimdgroups::Two, splits});
+      add({LinearTile::GgufRegister, n / GGUF_TILE_COLUMNS, LinearSimdgroups::Four, splits});
+    }
+    (void)k;
+    return result;
+  }
   const auto append = [&](LinearConfig config) {
     for (const auto &existing : result)
       if (existing.configuration() == config) return;

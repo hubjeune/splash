@@ -22,7 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 PACKAGE = os.path.expanduser("~/Models/splash/swift-splash-project/output/swift15-splash")
 
 
-def run_profile(spec, prompt, cycles, binary, metallib):
+def run_profile(spec, prompt, cycles, binary, metallib, package=PACKAGE):
     spec, _, env_spec = spec.partition("%")
     choices, _, own_lib = spec.partition("@")
     metallib = own_lib or metallib
@@ -33,7 +33,7 @@ def run_profile(spec, prompt, cycles, binary, metallib):
     env.pop("SPLASH_KERNEL_CHOICES", None)
     if choices != "-":
         env["SPLASH_KERNEL_CHOICES"] = os.path.abspath(choices)
-    out = subprocess.run([binary, metallib, PACKAGE, "--prompt-tokens", str(prompt), "--cycles", str(cycles)],
+    out = subprocess.run([binary, metallib, package, "--prompt-tokens", str(prompt), "--cycles", str(cycles)],
                          capture_output=True, text=True, env=env, cwd=ROOT)
     widths = parse(out.stdout)
     # decode-profile can end with "completed request was decoded" once a synthetic
@@ -73,6 +73,7 @@ def main():
     ap.add_argument("--cycles", type=int, default=9)
     ap.add_argument("--prompt-tokens", type=int, default=2048)
     ap.add_argument("--binary", default=os.path.join(ROOT, "build/engine-tests/decode-profile"))
+    ap.add_argument("--package", default=PACKAGE, help="package or GGUF assembly root")
     ap.add_argument("--metallib", default=os.path.join(ROOT, "build/splash.metallib"))
     args = ap.parse_args()
     configs = [c.split("=", 1) for c in args.configs]
@@ -80,7 +81,7 @@ def main():
     for r in range(args.rounds):
         order = configs if r % 2 == 0 else configs[::-1]
         for label, choices in order:
-            results[label].append(run_profile(choices, args.prompt_tokens, args.cycles, args.binary, args.metallib))
+            results[label].append(run_profile(choices, args.prompt_tokens, args.cycles, args.binary, args.metallib, args.package))
         print(f"round {r + 1}/{args.rounds}", file=sys.stderr, flush=True)
     base = configs[0][0]
     widths = sorted(results[base][0])
