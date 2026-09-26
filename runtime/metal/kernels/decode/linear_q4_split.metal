@@ -505,17 +505,17 @@ kernel void decode_linear_q4_row_sums(device const bfloat *input [[buffer(0)]],
 }
 // Residual adds the auxiliary buffer; SiluGate multiplies by SiLU of it (the
 // up pass of a two-pass gate/up, as q4_mpp_tile_batched's MultiplySiluGate).
-template <ushort Rows, ushort Sg, bool Residual = true, bool SiluGate = false, class Out = bfloat>
+template <ushort Rows, ushort Sg, bool Residual = true, bool SiluGate = false, class Out = bfloat,
+          ushort TileN = 32, ushort Parts = 4, ushort Diag = 0>
 inline void m5_split_rows_device_sums(device bfloat *input, device uchar *weights,
                                       device bfloat *scales, device bfloat *biases,
                                       device bfloat *residual, device Out *output,
                                       device const float *row_sums, constant Q4Params &p,
                                       uint group, uint lane, uint simd,
                                       threadgroup float *partials) {
-  constexpr uint TileN = 32, Parts = 4;
   uint partition = simd / Sg;
   for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
-    q4_mpp_tile_split<TileN, false, 256, true, Sg, Parts, Rows, 2, true, 0, true>(
+    q4_mpp_tile_split<TileN, false, 256, true, Sg, Parts, Rows, 2, true, Diag, true>(
         input, weights, scales, biases, partials, weights, scales, biases,
         p.input_size, partials, tile * TileN, lane, simd % Sg, partition, row_sums);
     for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * Sg * 32) {
@@ -650,3 +650,52 @@ kernel void decode_linear_q4_n32_split4_sums_gate_up(
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
 }
+
+// H17 experiments: wider multi-lane plain tiles (less input re-reading per
+// projection), sums read from device. Buffers as the plain sums kernels.
+#define M5X_ML_PLAIN(Name, Rows, Sg, TileN, Parts)                             \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *output [[buffer(4)]],                        \
+                   device const float *row_sums [[buffer(5)]],                 \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float partials[Parts * Rows * TileN];                          \
+    m5_split_rows_device_sums<Rows, Sg, false, false, bfloat, TileN, Parts>(   \
+        input, weights, scales, biases, input, output, row_sums, params,       \
+        group, lane, simd, partials);                                          \
+  }
+M5X_ML_PLAIN(m5x_ml_sums_n64_p2_sg2_m32, 32, 2, 64, 2)
+M5X_ML_PLAIN(m5x_ml_sums_n64_p2_sg4_m32, 32, 4, 64, 2)
+M5X_ML_PLAIN(m5x_ml_sums_n64_p4_sg2_m24, 24, 2, 64, 4)
+M5X_ML_PLAIN(m5x_ml_sums_n64_p2_sg2_m24, 24, 2, 64, 2)
+M5X_ML_PLAIN(m5x_ml_sums_n64_p4_sg1_m16, 16, 1, 64, 4)
+M5X_ML_PLAIN(m5x_ml_sums_n64_p4_sg2_m16, 16, 2, 64, 4)
+#undef M5X_ML_PLAIN
+// Diagnostics (timing only): Diag 1 no scale/bias epilogue, 2 no matmul/weights.
+#define M5X_ML_DIAG(Name, Rows, Sg, Diag)                                      \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *output [[buffer(4)]],                        \
+                   device const float *row_sums [[buffer(5)]],                 \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float partials[4 * Rows * 32];                                 \
+    m5_split_rows_device_sums<Rows, Sg, false, false, bfloat, 32, 4, Diag>(    \
+        input, weights, scales, biases, input, output, row_sums, params,       \
+        group, lane, simd, partials);                                          \
+  }
+M5X_ML_DIAG(m5x_ml_sums_diag1_sg2_m32, 32, 2, 1)
+M5X_ML_DIAG(m5x_ml_sums_diag2_sg2_m32, 32, 2, 2)
+M5X_ML_DIAG(m5x_ml_sums_diag1_sg1_m24, 24, 1, 1)
+M5X_ML_DIAG(m5x_ml_sums_diag2_sg1_m24, 24, 1, 2)
+M5X_ML_DIAG(m5x_ml_sums_diag1_sg1_m8, 8, 1, 1)
+#undef M5X_ML_DIAG

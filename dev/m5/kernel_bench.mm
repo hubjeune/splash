@@ -262,7 +262,7 @@ int run(const std::string &metallib, const Options &options) {
     b.input = backend.allocateBuffer(2ULL * maxRows * shape.k);
     b.output = backend.allocateBuffer(2ULL * maxRows * shape.n);
     b.residual = backend.allocateBuffer(2ULL * maxRows * shape.n);
-    b.rowSums = backend.allocateBuffer(4ULL * 8 * (shape.k / 64));
+    b.rowSums = backend.allocateBuffer(4ULL * maxRows * (shape.k / 64));
     auto *x = static_cast<uint16_t *>(b.input.contents());
     auto *r = static_cast<uint16_t *>(b.residual.contents());
     for (uint64_t i = 0; i < uint64_t(maxRows) * shape.k; ++i)
@@ -312,7 +312,10 @@ int run(const std::string &metallib, const Options &options) {
                             }});
       }
       for (const auto &raw : options.raws) {
-        if (rows != 8) continue;
+        // One-lane raws, or multi-lane raws named _m<rows>.
+        if (rows != 8 && raw.name.find("_m" + std::to_string(rows)) == std::string::npos) continue;
+        if (rows == 8 && raw.name.find("_m16") != std::string::npos) continue;
+        if (rows == 8 && (raw.name.find("_m24") != std::string::npos || raw.name.find("_m32") != std::string::npos)) continue;
         if (shape.epilogue == LinearEpilogue::GateUp && raw.name.find("gate_up") == std::string::npos) continue;
         if (shape.epilogue == LinearEpilogue::None && raw.name.find("_devsums") == std::string::npos && raw.name.find("_sums") == std::string::npos) continue;
         // A sums kernel's buffer contract follows its epilogue: never bind a
@@ -332,11 +335,15 @@ int run(const std::string &metallib, const Options &options) {
         // (once per projection, timed with it).
         const bool deviceSums = raw.name.find("_devsums") != std::string::npos || raw.name.find("_sums") != std::string::npos;
         variants.push_back({raw.name + (deviceSums ? " (+sums)" : ""), raw.name, raw.parts,
-                            [&, raw, groups, threads, deviceSums](metal::CommandGraph &g, uint32_t c) {
+                            [&, raw, groups, threads, deviceSums, rows](metal::CommandGraph &g, uint32_t c) {
                               const auto &a = ws[c].affine();
                               if (deviceSums) {
-                                g.add("m5x_row_sums8", {b.input, b.rowSums}, Q4Params{shape.n, shape.k, 0},
-                                      {shape.k / 64, 1, 1}, {256, 1, 1});
+                                if (rows == 8)
+                                  g.add("m5x_row_sums8", {b.input, b.rowSums}, Q4Params{shape.n, shape.k, 0},
+                                        {shape.k / 64, 1, 1}, {256, 1, 1});
+                                else
+                                  g.add("decode_linear_q4_row_sums", {b.input, b.rowSums}, Q4Params{shape.n, shape.k, 0},
+                                        {shape.k / 64, 1, 1}, {rows * 32, 1, 1});
                                 if (shape.epilogue == LinearEpilogue::GateUp) {
                                   const auto &u = gs[c].affine();  // bench: gs = gate, ws = up
                                   g.add(raw.name, {b.input, u.weights, u.scales, u.biases, b.output, a.weights,
