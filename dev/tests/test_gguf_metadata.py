@@ -32,13 +32,17 @@ NORMAL, UNKNOWN, CONTROL, USER_DEFINED, UNUSED, BYTE = 1, 2, 3, 4, 5, 6
 GGML = {
     "F32": 0,
     "F16": 1,
+    "Q5_0": 6,
     "Q8_0": 8,
+    "Q2_K": 10,
     "Q4_K": 12,
     "IQ2_XXS": 16,
     "IQ3_XXS": 18,
     "IQ4_XS": 23,
+    "IQ1_M": 29,
     "BF16": 30,
     "MXFP4": 39,
+    "PQ2_0": 142,
 }
 
 
@@ -284,6 +288,59 @@ class GgufMetadataTests(unittest.TestCase):
                 with self.assertRaises(models.ModelError):
                     gguf.tokenizer_files(self.metadata(values))
 
+    def test_screening_takes_the_rotation_the_native_loader_runs(self):
+        # A dense target stored for rotated inputs, as Prism ML's GGUFs are:
+        # PQ2_0 projections and token table, BF16 alpha and beta.
+        values = {
+            key.replace("qwen35moe.", "qwen35."): value
+            for key, value in fixture().items()
+            if not key.startswith("qwen35moe.expert")
+        }
+        values["general.architecture"] = "qwen35"
+        rotation = {
+            "prism.hadamard.version": 1,
+            "prism.hadamard.block_size": 1024,
+            "prism.hadamard.transform": "normalized-sylvester-walsh-hadamard",
+            "prism.hadamard.axis": "input-last-dimension",
+            "prism.hadamard.sign_mode": "explicit",
+            "prism.hadamard.gdn_v_grouped": True,
+            "prism.hadamard.weight_names": ["output.weight"],
+            "prism.hadamard.inverse_weight_names": ["token_embd.weight"],
+            "prism.hadamard.sign_widths": [1024],
+            "prism.hadamard.sign_values": [1] * 1024,
+        }
+        tensors = {
+            name: GGML["F32"] if kind == GGML["F32"] else GGML["PQ2_0"]
+            for name, kind in loadable_tensors(values, self.root).items()
+        }
+        tensors |= {
+            n: GGML["BF16"]
+            for n in tensors
+            if n.endswith((".ssm_alpha.weight", ".ssm_beta.weight"))
+        }
+        path = write_gguf(self.root / "ok.gguf", values | rotation, tensors.items())
+        gguf.require_loadable(gguf.Metadata(path, tensors=True))
+        for changes in (
+            {"prism.hadamard.version": 2},
+            {"prism.hadamard.block_size": 512},
+            {"prism.hadamard.sign_mode": "identity"},
+            {"prism.hadamard.gdn_v_grouped": False},
+            {"prism.hadamard.seed": 7},
+        ):
+            with self.subTest(changes=changes):
+                path = write_gguf(
+                    self.root / "bad.gguf", values | rotation | changes, tensors.items()
+                )
+                with self.assertRaisesRegex(models.ModelError, "input rotation"):
+                    gguf.require_loadable(gguf.Metadata(path, tensors=True))
+        # The loader rotates dense targets only.
+        moe = fixture() | rotation
+        path = write_gguf(
+            self.root / "moe.gguf", moe, loadable_tensors(fixture(), self.root).items()
+        )
+        with self.assertRaisesRegex(models.ModelError, "input rotation"):
+            gguf.require_loadable(gguf.Metadata(path, tensors=True))
+
     def test_screening_accepts_each_tensor_as_the_native_loader_reads_it(self):
         values = fixture()
         values["qwen35moe.block_count"] = 41
@@ -296,22 +353,27 @@ class GgufMetadataTests(unittest.TestCase):
         # 40) is never loaded, so its types do not matter.
         tensors |= {"blk.1.ssm_alpha.weight": GGML["F32"]}
         tensors |= {"blk.1.ssm_beta.weight": GGML["F32"]}
-        tensors |= {"blk.40.ffn_up_exps.weight": GGML["IQ2_XXS"]}
+        tensors |= {"blk.40.ffn_up_exps.weight": GGML["BF16"]}
         tensors |= {"blk.0.ffn_down_exps.weight": GGML["IQ4_XS"]}
+        # The low-bit formats of Unsloth's smaller files, the embedding too.
+        tensors |= {"blk.4.ffn_gate_exps.weight": GGML["IQ3_XXS"]}
+        tensors |= {"blk.2.attn_qkv.weight": GGML["IQ1_M"]}
+        tensors |= {"blk.5.ffn_up_exps.weight": GGML["IQ2_XXS"]}
+        tensors |= {"token_embd.weight": GGML["Q2_K"]}
         path = write_gguf(self.root / "ok.gguf", values, tensors.items())
         gguf.require_loadable(gguf.Metadata(path, tensors=True))
         f32 = {name: GGML["F32"] for name in tensors}
         for changes, reason in (
             (
-                {"blk.4.ffn_gate_exps.weight": GGML["IQ3_XXS"]},
-                "ffn_gate_exps.weight IQ3_XXS [(]1 tensor[)]",
+                {"blk.4.ffn_gate_exps.weight": GGML["Q5_0"]},
+                "ffn_gate_exps.weight Q5_0 [(]1 tensor[)]",
             ),
             (
                 {
-                    "blk.0.attn_qkv.weight": GGML["MXFP4"],
-                    "blk.1.attn_qkv.weight": GGML["MXFP4"],
+                    "blk.0.attn_qkv.weight": GGML["BF16"],
+                    "blk.1.attn_qkv.weight": GGML["BF16"],
                 },
-                "attn_qkv.weight MXFP4 [(]2 tensors[)]",
+                "attn_qkv.weight BF16 [(]2 tensors[)]",
             ),
             ({"token_embd.weight": GGML["IQ4_XS"]}, "token_embd.weight IQ4_XS"),
             ({"blk.3.attn_q.weight": GGML["BF16"]}, "attn_q.weight BF16"),
@@ -347,17 +409,43 @@ class GgufMetadataTests(unittest.TestCase):
         self.assertEqual(gguf.Metadata(path).tensors, {})
 
     def test_loadable_types_are_the_native_formats(self):
-        # The installer's list must be the loader's own: kQuantFormats' GGML
-        # types (runtime/metal/abi/QuantFormat.h).
-        header = (
-            Path(__file__).resolve().parents[2] / "runtime/metal/abi/QuantFormat.h"
-        ).read_text()
+        # The installer's lists must be the loader's own: kQuantFormats' GGML
+        # types (runtime/metal/abi/QuantFormat.h), and those of the formats
+        # gguf_embedding_format names (runtime/metal/abi/Gguf.h).
+        abi = Path(__file__).resolve().parents[2] / "runtime/metal/abi"
+        header = (abi / "QuantFormat.h").read_text()
         table = header.split("kQuantFormats[GGUF_FMT_COUNT] = {", 1)[1].split("};", 1)[
             0
         ]
-        native = {gguf.TENSOR_TYPES[int(n)] for n in re.findall(r"\{(\d+),", table)}
-        self.assertEqual(native, gguf.QUANTIZED_TYPES)
-        self.assertLessEqual(gguf.EMBEDDING_TYPES, gguf.QUANTIZED_TYPES)
+        types = [gguf.TENSOR_TYPES[int(n)] for n in re.findall(r"\{(\d+),", table)]
+        self.assertEqual(set(types), gguf.QUANTIZED_TYPES)
+        ids = {
+            name: int(value)
+            for name, value in re.findall(r"#define GGUF_FMT_(\w+) (\d+)u", header)
+        }
+        embedding = (abi / "Gguf.h").read_text().split("gguf_embedding_format", 1)[1]
+        embedding = embedding.split("}", 1)[0]
+        names = re.findall(r"GGUF_FMT_(\w+)", embedding)
+        self.assertEqual({types[ids[name]] for name in names}, gguf.EMBEDDING_TYPES)
+
+    def test_rotation_screen_is_the_native_loaders(self):
+        # ROTATION and ROTATION_ARRAYS must be what GgufFile::readRotation
+        # (runtime/model/GgufFile.cpp) accepts: the keys it knows, its fixed
+        # parameters and GGUF_ROTATION_BLOCK (runtime/metal/abi/Gguf.h), and
+        # the grouped GDN value heads the planner requires.
+        runtime = Path(__file__).resolve().parents[2] / "runtime"
+        source = (runtime / "model/GgufFile.cpp").read_text()
+        known = source.split("kKnown[] = {", 1)[1].split("};", 1)[0]
+        self.assertEqual(
+            set(re.findall(r'"(\w+)"', known)),
+            gguf.ROTATION.keys() | gguf.ROTATION_ARRAYS,
+        )
+        fixed = dict(re.findall(r'stringValue\(key\("(\w+)"\)\) != "([^"]+)"', source))
+        fixed["version"] = int(re.search(r'key\("version"\)\) != (\d+)', source)[1])
+        header = (runtime / "metal/abi/Gguf.h").read_text()
+        block = re.search(r"#define GGUF_ROTATION_BLOCK (\d+)u", header)[1]
+        fixed["block_size"] = int(block)
+        self.assertEqual(fixed | {"gdn_v_grouped": True}, gguf.ROTATION)
 
     def test_every_derivation_names_an_unsupported_architecture(self):
         values = fixture()
@@ -474,7 +562,14 @@ class GgufMetadataTests(unittest.TestCase):
             models.ModelError, "several BF16 vision projectors"
         ):
             upstream.select_vision(projectors(**{"mmproj-a": bf16, "mmproj-b": bf16}))
-        with self.assertRaisesRegex(models.ModelError, "no mmproj"):
+        # Prism ML prefixes the model's name.
+        self.assertEqual(
+            upstream.select_vision(
+                projectors(**{"Model-mmproj-BF16": bf16, "Model-PQ2_0": text})
+            )[0],
+            "Model-mmproj-BF16.gguf",
+        )
+        with self.assertRaisesRegex(models.ModelError, "no GGUF named mmproj"):
             upstream.select_vision(projectors())
 
     def test_metadata_cache_hit_integrity_and_atomic_failure(self):

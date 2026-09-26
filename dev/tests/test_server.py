@@ -543,6 +543,7 @@ def main_args(**overrides):
             "default_reasoning_effort": None,
             "max_context": None,
             "max_memory": None,
+            "max_cache_disk": 0,
             "max_image_pixels": api.image_input.MAX_PIXELS,
             "max_new_tokens": 16,
             "request_timeout": 2,
@@ -1102,7 +1103,7 @@ class ServerTest(unittest.TestCase):
                     },
                     "draft_context": {
                         "target_prefill_rows": 10000,
-                        "active_rows": 2048,
+                        "prompt_end_rows": 2048,
                         "materialization_rows": 31,
                         "avoided_rows": 7921,
                         "restore_skipped": 1,
@@ -1164,7 +1165,7 @@ class ServerTest(unittest.TestCase):
         self.assertIn("splash_cache_reused_tokens_total 1024", metrics)
         self.assertIn("splash_cache_lazy_junctions_total 2", metrics)
         self.assertIn("splash_target_prefill_rows_total 10000", metrics)
-        self.assertIn("splash_draft_context_active_rows_total 2048", metrics)
+        self.assertIn("splash_draft_context_prompt_end_rows_total 2048", metrics)
         self.assertIn("splash_draft_context_avoided_rows_total 7921", metrics)
         self.assertIn("splash_draft_state_restore_skipped_total 1", metrics)
         self.assertIn("splash_constraint_mask_overlap_batches_total 5", metrics)
@@ -3366,10 +3367,29 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(Path(args.tokenizer), package / "tokenizer")
         self.assertIsNone(args.max_context)
         self.assertIsNone(args.max_memory)
+        self.assertEqual(args.max_cache_disk, 0)
+        disk_args = api.parse_args([*required, "--max-cache-disk", "5G"])
+        self.assertEqual(disk_args.max_cache_disk, 5 * 1024**3)
+        self.assertEqual(api._native_command(disk_args)[-1], str(5 * 1024**3))
+        for invalid in ("auto", "-1", "0G", "5X"):
+            with (
+                self.subTest(invalid=invalid),
+                mock.patch("sys.stderr", io.StringIO()) as error,
+                self.assertRaises(SystemExit),
+            ):
+                api.parse_args([*required, "--max-cache-disk", invalid])
+            self.assertIn("use 0 to disable, or a size such as 5G", error.getvalue())
         self.assertEqual(args.kv_format, "int8")
         self.assertNotIn("--kv-format", api._native_command(args))
         bf16_args = api.parse_args([*required, "--kv-format", "bf16"])
         self.assertEqual(api._native_command(bf16_args)[-2:], ["--kv-format", "bf16"])
+        disk_bf16_args = api.parse_args(
+            [*required, "--max-cache-disk", "5G", "--kv-format", "bf16"]
+        )
+        self.assertEqual(
+            api._native_command(disk_bf16_args)[-3:],
+            [str(5 * 1024**3), "--kv-format", "bf16"],
+        )
         with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
             api.parse_args([*required, "--kv-format", "fp16"])
         self.assertEqual(

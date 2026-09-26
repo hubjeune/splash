@@ -19,16 +19,22 @@ there is nothing to configure.
 Apple M3 or newer, macOS 26.4 or later, [Homebrew](https://brew.sh), 36 GB
 of unified memory (48 GB or more recommended), and free disk for the model,
 its draft and a prepared copy of their weights (up to about 40 GB in total for
-Qwen3.8-27B and 48 GB for Qwen3.6-35B-A3B).
+Qwen3.8-27B and 48 GB for Qwen3.6-35B-A3B). Macs with 24 GB run the smaller
+GGUF files: on a 24 GB M6 (12-core GPU), `unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS`
+with its DFlash2 draft advertises a 102,393-token context and decodes code at
+43.5 tok/s, and `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q2_K_XL` advertises the full
+256K context and decodes at about 100 tok/s. Where memory cannot hold a long
+context, startup suggests `--max-cache-disk`.
 
 ```bash
 brew install incoai/tap/splash
 splash serve --model mlx-community/Qwen3.8-27B-4bit
 ```
 
-The first run downloads the model and its matching DFlash2 draft, prepares
-weights for the Metal kernels, checks available memory, and starts serving on
-`127.0.0.1:8000`. Later starts reuse the prepared weights.
+The first run checks that the Mac's GPU and macOS are supported, downloads the
+model and its matching DFlash2 draft, prepares weights for the Metal kernels,
+checks available memory, and starts serving on `127.0.0.1:8000`. Later starts
+reuse the prepared weights.
 
 Once it prints `Ready`, leave this terminal open. Open <http://127.0.0.1:8000>
 in your browser, or run an installed coding agent from another terminal:
@@ -86,10 +92,11 @@ repository or a local directory. The tokenizer, configuration and chat template 
 from the target repository for MLX and from the selected GGUF file itself for
 GGUF, never from another repository: unsupported or incomplete tokenizer
 metadata is an error. GGUF variants whose tensor types Splash cannot load are
-rejected before download. Of Unsloth's files, UD-Q4_K_M and every larger one
-load for Qwen3.8-27B, and UD-IQ4_XS and every larger one for Qwen3.6-35B-A3B,
-except Q4_1, MXFP4_MOE, UD-Q8_K_XL and BF16
-([GGUF targets](DEVELOPMENT.md#gguf-targets)). Legacy Splash packages such as
+rejected before download. Of Unsloth's files, every one loads for both models,
+from UD-IQ1_S up, except UD-Q8_K_XL and BF16
+([GGUF targets](DEVELOPMENT.md#gguf-targets)). Prism ML's
+`prism-ml/Ternary-Bonsai-2-27B-gguf:PQ2_0`, a Qwen3.8-27B target, loads as well,
+with its input rotation and vision projector. Legacy Splash packages such as
 `incoai/Qwen3.8-27B-Splash` remain loadable.
 
 Vision comes from the same source: embedded vision tensors for MLX, or the
@@ -145,6 +152,10 @@ that a long uncached prompt will reach its first token quickly.
 - `--port`: HTTP port. Defaults to `SPLASH_PORT` or `8000`.
 - `--max-memory`: ceiling on Metal allocations, e.g. `28G`. Default: auto.
 - `--max-context`: context limit, up to `256K`, e.g. `100K`. Default: auto.
+- `--max-cache-disk`: SSD tier for the cache, e.g. `5G`. Default: 0 (off).
+  Startup suggests it when memory cannot hold the context; with it, a long
+  request that runs out of memory keeps its progress on SSD and replays far
+  less of its prompt.
 - `--kv-format`: target KV cache storage, `int8` (default) or `bf16`.
 - `--max-image-pixels`: maximum resized pixels per image. Default: 4,194,304.
 - `--allowed-host`: extra HTTP `Host` name to accept, such as `mymac.local`;
@@ -167,14 +178,17 @@ Restart the server to switch formats. Omit `--kv-format` or use
 If the model does not fit in the memory available, startup prints a memory
 budget breakdown and stops.
 
+`--max-cache-disk` works with either KV format and preserves its stored bytes
+without further quantization. Disk cache is temporary and does not survive a
+server restart. For disk cache behavior and memory overhead, see
+[disk cache](DEVELOPMENT.md#disk-cache).
+
 Authentication is off by default. Set `SPLASH_API_KEY` in the shell that runs
 `splash serve` and in the shell that runs an agent, and both sides use it.
 Health and readiness probes stay public.
 
 For LAN access and multiple servers, see
 [server configuration](DEVELOPMENT.md#server-configuration).
-
-Experimental cache offloading: [PR #3](https://github.com/incoai/splash/pull/3).
 
 ## Performance
 
@@ -252,10 +266,10 @@ per model:
   attention, GDN and MoE dimensions, with dispatch policies measured offline
   per GPU family and core count. MLX weights are prepared once into layouts
   packed for these kernels. GGUF weights keep their llama.cpp quantization,
-  repacked once into planes that kernels chosen by GPU family and core count
-  decode directly, without per-shape tuning. Both are mapped zero-copy from
-  disk. Everything ships precompiled: no Xcode, no compiler toolchain, nothing
-  tuned on your machine.
+  repacked once into planes that kernels chosen by GPU family, core count and
+  format decode directly, without per-shape tuning. Both are mapped zero-copy
+  from disk. Everything ships precompiled: no Xcode, no compiler toolchain,
+  nothing tuned on your machine.
 - **A memory plan computed for this machine.** Context, KV capacity, and batch
   limits are worked out at startup from the memory Metal recommends, less the
   weights, the draft, and each request's state.

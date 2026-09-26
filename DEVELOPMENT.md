@@ -283,7 +283,8 @@ upstream fixtures are in `dev/tests/fixtures/chat_templates/`.
 
 Vision comes from the target repository: MLX's `vision_tower.*` tensors,
 linking only `config.json` and the shards holding them, or the GGUF
-repository's root `mmproj*.gguf` projector, chosen by its header: a `clip`
+repository's root projector, a GGUF whose name holds `mmproj` (as
+`mmproj-BF16.gguf` or `MODEL-mmproj-BF16.gguf`), chosen by its header: a `clip`
 projector whose weights are BF16, or F32; BF16 is preferred. F16 has a narrower
 exponent than BF16, so an F16 projector has already rounded small weights and
 is not used. The processor configuration (MLX `preprocessor_config.json`, the
@@ -407,13 +408,13 @@ replaced or changed after `prepare` checked it is refused.
 Runtime admission counts prepared weights, draft and vision exactly once
 (`preparedModelWeightBytes`, which `tune-kernels` and the runtime oracle use
 too). Before loading, startup refuses a model whose prepared weights, with the
-pipeline and runtime reserves, one state cell and one KV extent, exceed the
-hard budget, so a model that can never fit is not prepared. File backing does
-not make Metal-resident pages reclaimable, and `WeightFile` keeps its buffer
-resident (`MetalBackend::keepResident`): the weights stay wired between
-requests until 10 minutes pass without a command, and the next command wires
-them again. macOS page cache, driver allocations and other applications still
-affect memory pressure and swap.
+pipeline and runtime reserves, one state cell, one KV extent and any disk tier
+KV staging, exceed the hard budget, so a model that can never fit is not
+prepared. File backing does not make Metal-resident pages reclaimable, and
+`WeightFile` keeps its buffer resident (`MetalBackend::keepResident`): the
+weights stay wired between requests until 10 minutes pass without a command,
+and the next command wires them again. macOS page cache, driver allocations and
+other applications still affect memory pressure and swap.
 
 `loadQwenTarget` (`QwenTargetLoader.hpp`) reads a target's files
 (`QwenTargetFiles`: packed files, or the files `AffineTargetLoader` or
@@ -445,17 +446,37 @@ every tensor the loader reads with a type it accepts for that tensor
 quantized types to `runtime/metal/abi/QuantFormat.h`). The native loader checks again
 and lists every unsupported tensor in one error:
 
-- linears and experts: Q4_K, Q5_K, Q6_K, Q3_K, IQ4_XS, IQ4_NL, Q8_0 or IQ3_S;
-- token embeddings: Q4_K, Q6_K or Q8_0;
+- linears and experts: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q4_0, Q4_1,
+  IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL,
+  MXFP4 or PQ2_0;
+- token embeddings: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q4_0, Q4_1 or PQ2_0;
 - norms, the MoE router and shared-expert scalar gate, and the GDN
   convolution, decay and time-step bias: F32;
-- GDN alpha and beta: both Q8_0 or both F32.
+- GDN alpha and beta: both Q8_0, both F32 or both BF16, which preparation
+  widens to the F32 values it equals.
 
-Of Unsloth's files in September 2026 that covers, for Qwen3.8-27B, UD-Q4_K_M
-and every larger file but Q4_1, UD-Q8_K_XL and BF16, and for Qwen3.6-35B-A3B,
-UD-IQ4_XS and every larger file but MXFP4_MOE, UD-Q8_K_XL and BF16. The smaller
-files need IQ3_XXS, IQ2, IQ1 or Q2_K kernels and the others Q4_0/Q4_1, MXFP4 or
-BF16 ones, which do not exist yet.
+Of Unsloth's files in September 2026 that covers every file of Qwen3.8-27B
+and Qwen3.6-35B-A3B, from UD-IQ1_S up, but UD-Q8_K_XL and BF16, whose BF16
+tensors need kernels that do not exist yet. PQ2_0 is Prism ML's type 142,
+`block_pq2_0` of PrismML-Eng/llama.cpp, which upstream GGML does not define:
+2-bit codes q worth d (q - 1) with one half d per 128 weights. A format's
+image takes the bits per weight of its GGUF blocks, but for Q3_K's and Q6_K's
+padded meta units (1/16 bit more) and IQ3_S's chunk words (4.06 bits for its
+3.44).
+
+Prism ML's GGUFs, such as `prism-ml/Ternary-Bonsai-2-27B-gguf:PQ2_0`, store
+every projection for rotated inputs: the `prism.hadamard.*` metadata names the
+tensors whose weights multiply H (D x), H the normalized Walsh-Hadamard
+transform of each block of 1024 inputs and D an explicit sign per input, and
+the token table, whose rows are stored as H (D e). The engine runs that one
+form, on dense targets whose rotation names exactly the tensors the planner
+repacks (every quantized projection and the head, and alpha/beta when Q8_0),
+a PQ2_0 token table, and GDN value heads in grouped order (the installer
+screens the parameters, `GgufFile` and the planner check the rest).
+A rotated projection rotates its input once into `LinearScratch::rotated`
+(`gguf_rotate`, in fp32 and rounded once to bf16) before its quantized
+segments, whose kernels are the format's, while float segments read the input
+as it is; the table gathers each row through the inverse (`gguf_embed_rotated_pq20`).
 
 At load time the engine validates the GGUF metadata, including the rotary
 embedding and norm epsilon the kernels assume (`rope.freq_base`,
@@ -480,20 +501,25 @@ Apple9 (M3, M4) the register tile (`LinearTile::GgufRegister`) runs the kernels 
 bf16 matrix operations with one fp32 epilogue per coefficient group, so every output is the bf16
 rounding of its fp32-accumulated sum. They read their activations as the Table16 table
 (`kernels/common/gguf_sgmatrix.h`) that the input's producer writes, or
-`decode_linear_gguf_prepare` when none did. On Apple10 (M5) the staged tile
+`decode_linear_gguf_prepare` when none did. The formats whose operands those kernels build from
+grid lookups, IQ3_XXS, the IQ2 formats and IQ1 (`apple9StagesFormat`), and Q2_K from two lanes
+decode faster on the staged tile there, which a projection all of whose segments are in them
+takes wherever the tile holds its lanes' rows unpadded. On Apple10 (M5) the staged tile
 (`LinearTile::GgufStaged`) runs the kernels of `runtime/metal/kernels/shared/gguf_linear.metal`,
 which dequantize each weight once to half in threadgroup memory (`kernels/common/gguf_staged.h`)
 for MPP `matmul2d`, the neural accelerator's path, on bf16 activations; a step of three request
 lanes runs the 32-row tile over four lanes of storage. Prefill runs the staged kernels on both
 families, chunks of up to 32 rows on the decode tiles. Every projection splits its K across
 threadgroups by one rule (`decodeSplits`: each tile's tiers of threadgroups per core and inputs
-per partition, from measured occupancy) that does not depend on the batch width. The MoE experts
-(`runtime/ops/MoE.cpp`) run the same numerics per family over the grouped rows: the register form
-in `linear_gguf_sgmatrix.metal`, the staged one in `kernels/shared/moe_gguf.metal`. The float
-router and alpha/beta projections run in `kernels/shared/gguf_float.metal`, and the token rows are
-gathered by one template in `kernels/shared/embedding.metal`. These plans are fixed rules of GPU
-family, core count and shape: `Linear::setChoices` and `ExecutionPlans::install` reject tuned
-entries for block projections and GGUF MoE blocks.
+per partition, from measured occupancy, Apple9's staged tile taking the register tile's) that
+does not depend on the batch width. The MoE experts (`runtime/ops/MoE.cpp`) run the same numerics
+per family over the grouped rows: the register form in `linear_gguf_sgmatrix.metal`, the staged
+one in `kernels/shared/moe_gguf.metal`, which Apple9 takes for experts mostly in the formats it
+stages (`MoeShape::expertFormat`). The float router and alpha/beta projections run in
+`kernels/shared/gguf_float.metal`, and the token rows are gathered by one template in
+`kernels/shared/embedding.metal`. These plans are fixed rules of GPU family, core count, shape and
+format: `Linear::setChoices` and `ExecutionPlans::install` reject tuned entries for block
+projections and GGUF MoE blocks.
 
 A GGUF kernel of one quantized tensor names its epilogue last: `a` none, `r` residual, `g` the
 up pass with the silu gate. The staged ones are `gguf_decode_<format>_m<rows>_<e>` and
@@ -514,13 +540,16 @@ llama.cpp's and the decoding follows its Metal kernels: both keep llama.cpp's MI
 `THIRD_PARTY_NOTICES`, which the package ships.
 
 The tests' CPU reference (`dev/tests/engine/GgufFormatReference.hpp`) must reproduce the golden
-hashes of upstream GGML's dequantization (llama.cpp 7ab4ee7) in `gguf-reference`, and
-`gguf-planner` checks the planner's plans; both run in `make test-engine-cpu`.
+hashes of upstream GGML's dequantization (llama.cpp 7ab4ee7; for PQ2_0, which upstream lacks,
+PrismML-Eng/llama.cpp 01ae597) in `gguf-reference`, and `gguf-planner` checks the planner's
+plans; both run in `make test-engine-cpu`.
 `make test-engine-metal` runs `gguf-preparation`, which checks every format's planes, as the
 production executor and its `gguf_repack` kernel prepare them, bitwise against the reference,
 the prepared alpha/beta, norm, convolution and router bytes and the golden images; then
 `gguf-dequant`, the staged tile's dequantizer, built with the production Metal flags, against
-the half rounding of every reference weight; `gguf-projection`, every GGUF projection through
+the half rounding of every reference weight; `gguf-rotation`, `gguf_rotate` and the rotated
+PQ2_0 token gather bitwise against the fp32 butterflies and within one bf16 step of fp64;
+`gguf-projection`, every GGUF projection through
 `ops::Linear` with each tile forced, so both decode tiles run on every GPU, at one to four
 lanes, every K split and epilogue, fused segments, every gate/up format pair and the prefill
 tiles, each output inside the fp64 bound of `GgufFormatReference.hpp`; and `gguf-moe`: the float
@@ -688,6 +717,75 @@ bounded: after a suspension, new work waits for resident requests only while
 memory is still short, and at most for the 30 s resource wait; suspended
 requests then resume first, each within its own resource wait. Readiness does
 not guarantee that a request-sized allocation fits.
+
+### Disk cache
+
+`--max-cache-disk` adds an optional SSD tier for cached request states (GDN cell
+plus draft ring) and KV pages. Default: `0` (off). RAM and disk copies share the
+same block tree and recency order. Restoring a prefix keeps its disk copy, so
+its next eviction needs no write while that copy remains cached.
+
+Without the tier, a request that runs out of memory cannot publish its progress
+checkpoints and replays its prompt after each suspension. With the tier off,
+startup suggests it in one line when memory may not hold the advertised
+context: the memory plan within what the host had available at startup beyond
+its reserve and the warning margin (`EngineMemoryPlan::contextTokensWithin`).
+The estimate is conservative, since macOS compresses other applications further
+once the engine loads. The tier does not raise the context limit.
+
+Writes happen when RAM reclamation selects a victim. States copy through one
+host staging buffer, freeing their RAM immediately. KV leaves needed by a state
+on them or below them copy through a 128-page staging ring and are released
+after the write succeeds. Unneeded tails are dropped without writing, together
+with any disk copies below them. When staging is busy, admission waits for the
+transfer instead of evicting additional victims.
+Demotions may occupy half the ring and restores three quarters, leaving room
+for the other direction. Copies ride Metal commands, including a copy-only
+command when inference is idle.
+
+A state with no available RAM cache slot can be written directly from its lane.
+Rolling checkpoints replace the least recently used copies like any state, so
+a suspended request keeps its progress when the quota is full; they retire when
+replaced or no longer needed. With the disk tier enabled, a checkpoint less than one full
+prefill chunk (2048 tokens) before the final replay boundary is captured only
+if a RAM slot is available without reclamation. Otherwise its predecessor stays
+usable for cancellation recovery; the final reusable state still uses the disk
+tier. Matched KV restores start from the root toward the selected
+state, with the state read alongside. Cancellation drops unsubmitted, unshared
+reads; submitted transfers drain before their buffers can be reused. Restored
+states remain usable even when there is no room to promote them into RAM cache.
+
+Two unlinked temporary files share one quota for live slots. A full quota
+replaces the oldest redundant copy first, then the oldest sole copy, across
+both KV and states. A quota smaller than the working set can cause repeated
+reads and writes; it is not a write-rate limit. Each file retains its allocated
+high-water mark until shutdown, so filesystem space can exceed the live-slot
+quota. Closing the server releases both files.
+
+Transfers use `pread`/`pwrite` with `F_NOCACHE`. The KV staging ring, 128
+pages that the GPU copies through, is Metal memory within `--max-memory`: about
+42 MiB for 35B and 130 MiB for 27B with INT8 KV, 80 MiB and 256 MiB with BF16 KV.
+The memory plan sets it aside whenever the flag is set, even if the tier then
+fails to start, so the KV pool and the advertised context shrink by it.
+The state staging buffer, one state (109 MiB for 35B, 187 MiB for 27B), is host
+memory outside `--max-memory`.
+A quota too small for one state leaves the tier disabled.
+A failed write disables further writes to that file. Failed KV writes retain
+RAM pages; failed state writes invalidate the disk copy. A failed read
+invalidates its cached data, allowing lookup to fall back to the surviving
+prefix.
+
+`/status` reports the shared quota and KV transfers under `disk`. Its cumulative
+`read_bytes` and `written_bytes` count bytes transferred by file IO across KV
+and state files, including partial or cancelled transfers. They exclude
+filesystem metadata and physical SSD write amplification. State transfers appear
+under `state` (`disk_bytes`, `offloads`, `disk_hits`, `disk_promotions`). Cache
+counters include:
+
+- `kv_disk_hit_tokens`: tokens restored by completed KV transfers. Shared
+  transfers count once, including those completed before cancellation or a
+  resource retry.
+- `lost_state_misses`: lookups that matched KV where a reusable state used to be.
 
 ### Judgment contracts
 
@@ -965,9 +1063,9 @@ when the tokenizer supports independent encoding there. This process-local
 cache retains at most four prefixes and 8 MiB of text/token storage; it falls
 back to full encoding for other tokenizer pipelines. `/status.tokenizer_cache`
 reports its usage. It does not alter prompt text, token IDs or the GPU KV cache.
-Server restarts require recomputation. The separate
-[SSD cache proposal](https://github.com/incoai/splash/pull/3) preserves evicted
-model state during a server session; its temporary files do not survive shutdown.
+Server restarts require recomputation. The SSD tier (`--max-cache-disk`, see
+[disk cache](#disk-cache)) keeps evicted KV pages and states during a server
+session; its temporary files do not survive shutdown.
 
 ## Package
 

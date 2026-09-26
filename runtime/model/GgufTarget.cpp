@@ -25,6 +25,7 @@ GgufTargetLoader::GgufTargetLoader(metal::MetalBackend &backend, const std::file
   source_.checkUnchanged();
   // Validates the whole source before its tensor data is hashed.
   images_ = gguf::planImages(file, geometry);
+  rotation_ = file.rotation();
   for (const gguf::Image &image : images_) {
     backend.checkOperation();
     weights_.push_back(ggufImageWeight(source_, image));
@@ -40,13 +41,19 @@ WeightFile GgufTargetLoader::head() { return open(images_.size() - 2); }
 
 WeightFile GgufTargetLoader::embedding() { return open(images_.size() - 1); }
 
+void GgufTargetLoader::prepare() {
+  for (size_t index = 0; index < images_.size(); ++index) static_cast<void>(files_.prepare(weights_[index], writer(index)));
+}
+
+WeightWriter GgufTargetLoader::writer(size_t index) {
+  return [this, index](int destination, const PreparationCheck &admit) {
+    writeGgufImage(backend_, source_, destination, images_[index], admit);
+  };
+}
+
 WeightFile GgufTargetLoader::open(size_t index) {
   const gguf::Image &image = images_[index];
-  return files_.open(backend_, weights_[index],
-      [&](int destination, const PreparationCheck &admit) {
-        writeGgufImage(backend_, source_, destination, image, admit);
-      },
-      kGgufImageMagic, image.layer, image.type);
+  return files_.open(backend_, weights_[index], writer(index), kGgufImageMagic, image.layer, image.type);
 }
 
 } // namespace splash::model

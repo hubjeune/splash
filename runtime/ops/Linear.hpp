@@ -60,6 +60,11 @@ enum class LinearTile : uint8_t {
   // splash-m5: Split32 reading row sums computed once per projection (Linear.cpp).
   SplitSums32
 };
+// The GGUF formats Apple9's staged tiles decode faster than its register
+// tiles, dense and MoE: IQ3_XXS, the IQ2 formats and IQ1, whose operands the
+// register tiles build from grid lookups beside their matrix operations
+// (LinearGguf.cpp, MoE.hpp).
+[[nodiscard]] bool apple9StagesFormat(uint32_t format) noexcept;
 enum class LinearSimdgroups : uint8_t { Two = 2, Four = 4, Eight = 8 };
 
 struct LinearWorkload final {
@@ -103,19 +108,28 @@ struct LinearScratch final {
   metal::MetalBuffer sums;
   metal::MetalBuffer partials;
   metal::MetalBuffer counters;
+  // The bf16 input rows a rotated projection's quantized segments read
+  // (ProjectionShape::rotated): rotatedBytes() of its plan.
+  metal::MetalBuffer rotated{};
 };
 struct LinearScratchSize final {
-  uint64_t input = 0, sums = 0, partials = 0, counters = 0;
-  [[nodiscard]] uint64_t bytes() const noexcept { return input + sums + partials + counters; }
+  uint64_t input = 0, sums = 0, partials = 0, counters = 0, rotated = 0;
+  [[nodiscard]] uint64_t bytes() const noexcept { return input + sums + partials + counters + rotated; }
   // Grows each field to hold `other`'s too.
   LinearScratchSize &include(const LinearScratchSize &other) noexcept {
     input = std::max(input, other.input);
     sums = std::max(sums, other.sums);
     partials = std::max(partials, other.partials);
     counters = std::max(counters, other.counters);
+    rotated = std::max(rotated, other.rotated);
     return *this;
   }
 };
+// LinearScratch::rotated bytes of a rotated projection's plan of storageRows
+// rows of `width` inputs.
+[[nodiscard]] constexpr uint64_t rotatedBytes(uint32_t width, uint64_t storageRows) noexcept {
+  return uint64_t{width} * storageRows * 2;
+}
 
 // The activation layout a decode plan reads: the producer's bf16 rows, or an
 // X^T table with fp32 row sums in LinearScratch that a producer can emit
@@ -213,8 +227,10 @@ public:
   static constexpr std::size_t kMaximumCandidates = 20;
 
   [[nodiscard]] LinearPlan plan(LinearWorkload workload) const;
-  // The plan of `workload` in the projection's weight layout, into its destination type.
-  [[nodiscard]] LinearPlan plan(LinearWorkload workload, const Projection &projection) const;
+  // The plan of `workload` in the projection's weight layout, into its destination type; a gate/up plan also runs
+  // `gate`.
+  [[nodiscard]] LinearPlan plan(LinearWorkload workload, const Projection &projection,
+                                const Projection *gate = nullptr) const;
   // Rows of storage a decode step of `rows` rows binds for a projection of
   // `shape`: the storageRows of its decode plans, which every epilogue shares.
   [[nodiscard]] uint32_t decodeStorageRows(uint32_t rows, ProjectionShape shape) const;
@@ -223,7 +239,8 @@ public:
   [[nodiscard]] LinearPlan prefillPlan(const Projection &projection, uint32_t rows,
                                        LinearEpilogue epilogue) const;
   [[nodiscard]] LinearPlan decodePlan(const Projection &projection, uint32_t lanes,
-                                      LinearEpilogue epilogue = LinearEpilogue::None) const;
+                                      LinearEpilogue epilogue = LinearEpilogue::None,
+                                      const Projection *gate = nullptr) const;
   [[nodiscard]] LinearScratchSize decodeScratchSize(LinearWorkload workload) const;
   // The scratch of every prefill chunk and epilogue of a projection of
   // `shape`: the split partials and counters of the chunks that run the GGUF
@@ -276,11 +293,17 @@ public:
                                  LinearScratch scratch = {}, PreparedInput prepared = {}) const;
 
 private:
-  [[nodiscard]] LinearConfig baseline(LinearWorkload workload) const;
+  // The device's configuration of the workload; a block plan's tile may follow the formats of the projections it
+  // runs.
+  [[nodiscard]] LinearConfig baseline(LinearWorkload workload,
+                                      std::span<const Projection *const> projections = {}) const;
   // Counts `dispatches` dispatches that each fuse `lanes` request lanes.
   static void account(LinearDispatchStats &stats, uint32_t lanes, uint32_t dispatches) noexcept;
-  // GGUF policy and dispatch (LinearGguf.cpp).
-  [[nodiscard]] LinearConfig ggufBaseline(LinearWorkload workload) const;
+  // GGUF policy and dispatch (LinearGguf.cpp). Block plans are not tuned.
+  [[nodiscard]] LinearConfig ggufBaseline(LinearWorkload workload,
+                                          std::span<const Projection *const> projections) const;
+  // The scratch of every tile a block decode plan of the workload may take.
+  [[nodiscard]] LinearScratchSize ggufDecodeScratchSize(LinearWorkload workload) const;
   void addGguf(metal::CommandGraph &graph, const LinearBuffers &buffers,
                const Projection &projection, const LinearPlan &plan,
                const Projection *gate, LinearDispatchStats *stats) const;

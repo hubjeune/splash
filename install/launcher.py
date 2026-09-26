@@ -25,6 +25,7 @@ except ImportError:  # Executed directly by the source or packaged entry point.
 
 ROOT = paths.ROOT
 RUNTIME_DIR = paths.RUNTIME
+PROFILES_DIR = paths.PROFILES
 PORT = 8000
 # A copy: the launcher runs before .venv exists; server/chat_templates imports Jinja2.
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -38,8 +39,8 @@ def _base_url(port):
     return f"http://127.0.0.1:{port}"
 
 
-def _runtime_dir(port):
-    return RUNTIME_DIR if port == PORT else RUNTIME_DIR / "ports" / str(port)
+def _profiles_dir(port):
+    return PROFILES_DIR if port == PORT else PROFILES_DIR / "ports" / str(port)
 
 
 def _request_json(path, timeout=2, *, port=PORT):
@@ -85,6 +86,20 @@ def _ensure_installed(selection):
                     command, cwd=ROOT, pass_fds=(lock.fileno(),)
                 ).returncode:
                     raise LauncherError("source build failed; see the output above")
+    # The engine refuses an unsupported Mac only once the model is prepared;
+    # its own check refuses it before tens of GB are downloaded.
+    check = subprocess.run(
+        [str(paths.BINARY), "device-check"], capture_output=True, text=True
+    )
+    if check.returncode:
+        # The binary's own refusal is its last line; one that dies before
+        # main() (dyld on an older macOS) leaves a report worth showing whole.
+        report = check.stderr.strip()
+        raise LauncherError(
+            report.splitlines()[-1].removeprefix("error: ")
+            if check.returncode > 0 and report
+            else f"the engine's device check failed: {report or f'status {check.returncode}'}"
+        )
     command = [
         str(paths.PYTHON),
         str(ROOT / "install/models.py"),
@@ -230,6 +245,8 @@ def serve(args):
             )
         if args.max_request_size is not None:
             command.extend(["--max-request-size", str(args.max_request_size)])
+        if args.max_cache_disk:
+            command.extend(["--max-cache-disk", str(args.max_cache_disk)])
         if args.max_image_pixels is not None:
             command.extend(["--max-image-pixels", str(args.max_image_pixels)])
         if args.no_webui:
@@ -283,7 +300,7 @@ def coding_client(args):
         _base_url(args.port),
         model,
         context,
-        _runtime_dir(args.port),
+        _profiles_dir(args.port),
         input_modalities=models[0].get("input_modalities"),
         client_args=args.client_args,
         client_version=client_version,
@@ -314,6 +331,18 @@ def _parse_port(value):
     if not 1 <= port <= 65535:
         raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
+
+
+def _parse_max_cache_disk(value):
+    if value.strip() == "0":
+        return 0
+    try:
+        result = _parse_max_memory(value)
+    except argparse.ArgumentTypeError:
+        result = None
+    if result is None:
+        raise argparse.ArgumentTypeError("use 0 to disable, or a size such as 5G")
+    return result
 
 
 def _parse_max_memory(value):
@@ -487,6 +516,13 @@ def parse_args(argv=None):
         "--max-memory",
         type=_parse_max_memory,
         help="Metal budget ceiling, e.g. 28G (default: auto)",
+    )
+    server.add_argument(
+        "--max-cache-disk",
+        dest="max_cache_disk",
+        type=_parse_max_cache_disk,
+        default=0,
+        help="SSD quota for cached KV pages and states, e.g. 5G (default: 0, disabled)",
     )
     server.add_argument(
         "--max-context",
