@@ -96,8 +96,11 @@ inline void q4_store_input_sums(device const bfloat *input, uint input_size,
 // Simdgroups instance of one tile is bit-identical to the others.
 // The destination's type Out is bf16, or fp32 for a plain projection's
 // logits (ops::Projection::destination), which keeps the sum unrounded.
+// splash-m5: SumsReady (default false) takes input_sums already holding every
+// quant group's row sums, [group][row] for all of K (FORK.md H10/H11).
 template <ushort TileN, bool GateUp, bool AddResidual,
-          ushort StorageN = TileN, bool Pipelined = false, ushort Simdgroups = 8, class Out>
+          ushort StorageN = TileN, bool Pipelined = false, ushort Simdgroups = 8,
+          bool SumsReady = false, class Out>
 inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
                         device bfloat *scales_0, device bfloat *biases_0,
                         device Out *output_0, device uchar *weights_1,
@@ -143,9 +146,10 @@ inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
       accumulated_1[i] = 0.0f;
   });
 
+  if constexpr (!SumsReady)
   q4_store_input_sums<8, Simdgroups>(input, input_size, 0, input_sums, 0,
                                      simd_lane, simd_group);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if constexpr (!SumsReady) threadgroup_barrier(mem_flags::mem_threadgroup);
   auto run_group = [&](uint quant_group,
                        thread decltype(accumulated_0) &partial_0,
                        thread decltype(accumulated_1) &partial_1) {
@@ -174,7 +178,8 @@ inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
       uint row = index[1];
       ulong parameter = (ulong(tile) * quant_groups + quant_group) * StorageN +
                         tile_offset + index[0];
-      uint sum_offset = ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+      uint sum_offset = SumsReady ? quant_group * 8
+                                  : ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
           input_sums[sum_offset + row] * float(biases_0[parameter]);
@@ -184,7 +189,7 @@ inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
             input_sums[sum_offset + row] * float(biases_1[parameter]);
       }
     });
-    if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+    if (!SumsReady && (quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
       uint next_group = (quant_group + 1) >> 2;
       q4_store_input_sums<8, Simdgroups>(input, input_size,
                                          quant_group * 64 + 64, input_sums,

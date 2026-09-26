@@ -150,7 +150,7 @@ struct Options {
   double gigabytes = 1.5;
   bool candidates = false;
   std::vector<LinearConfig> configs;
-  struct Raw { std::string name; uint32_t tileN, parts; };
+  struct Raw { std::string name; uint32_t tileN, parts, threads = 0; };
   std::vector<Raw> raws;
   std::string baseline;
 };
@@ -307,12 +307,13 @@ void run(const std::string &metallib, const Options &options) {
                             }});
       }
       for (const auto &raw : options.raws) {
-        if (rows != 8 || shape.epilogue != LinearEpilogue::Residual) continue;
+        if (rows != 8 || shape.epilogue == LinearEpilogue::GateUp) continue;
+        if (shape.epilogue == LinearEpilogue::None && raw.name.find("_devsums") == std::string::npos) continue;
         if (shape.k % (256 * raw.parts) || shape.n % raw.tileN) {
           std::cout << "  rows " << rows << " " << raw.name << ": K or N does not divide\n";
           continue;
         }
-        const uint32_t groups = shape.n / raw.tileN, threads = raw.parts * 32;
+        const uint32_t groups = shape.n / raw.tileN, threads = raw.threads ? raw.threads : raw.parts * 32;
         // *_devsums kernels read row sums a preceding m5x_row_sums8 dispatch writes
         // (once per projection, timed with it).
         const bool deviceSums = raw.name.find("_devsums") != std::string::npos;
@@ -322,9 +323,13 @@ void run(const std::string &metallib, const Options &options) {
                               if (deviceSums) {
                                 g.add("m5x_row_sums8", {b.input, b.rowSums}, Q4Params{shape.n, shape.k, 0},
                                       {shape.k / 64, 1, 1}, {256, 1, 1});
-                                g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output,
-                                                 b.rowSums},
-                                      Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                                if (shape.epilogue == LinearEpilogue::Residual)
+                                  g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output,
+                                                   b.rowSums},
+                                        Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
+                                else
+                                  g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.output, b.rowSums},
+                                        Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
                               } else {
                                 g.add(raw.name, {b.input, a.weights, a.scales, a.biases, b.residual, b.output},
                                       Q4Params{shape.n, shape.k, groups}, {groups, 1, 1}, {threads, 1, 1});
@@ -396,8 +401,9 @@ int main(int argc, const char *argv[]) {
         else if (a == "--raw" && v) {
           std::vector<std::string> f; std::stringstream ss(argv[++i]); std::string item;
           while (std::getline(ss, item, ':')) f.push_back(item);
-          if (f.size() != 3) throw std::invalid_argument("--raw KERNEL:TILEN:PARTS");
-          options.raws.push_back({f[0], uint32_t(std::stoul(f[1])), uint32_t(std::stoul(f[2]))});
+          if (f.size() != 3 && f.size() != 4) throw std::invalid_argument("--raw KERNEL:TILEN:PARTS[:THREADS]");
+          options.raws.push_back({f[0], uint32_t(std::stoul(f[1])), uint32_t(std::stoul(f[2])),
+                                  f.size() == 4 ? uint32_t(std::stoul(f[3])) : 0u});
         }
         else if (a == "--baseline" && v) options.baseline = argv[++i];
         else throw std::invalid_argument("unknown option " + a);

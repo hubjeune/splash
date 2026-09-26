@@ -396,3 +396,66 @@ M5X_DEVICE_SUMS(decode_linear_q4_n32_split4_sums_residual, 4)
 M5X_DEVICE_SUMS(decode_linear_q4_n32_split8_sums_residual, 8)
 M5X_DEVICE_SUMS(decode_linear_q4_n32_split17_sums_residual, 17)
 #undef M5X_DEVICE_SUMS
+
+// H11 experiments: plain one-lane projections reading once-per-projection row sums.
+// Buffers: input, weights, scales, biases, output, row_sums, params.
+template <ushort TileN, ushort Sg>
+inline void m5x_tile_device_sums(device bfloat *input, device uchar *weights,
+                                 device bfloat *scales, device bfloat *biases,
+                                 device bfloat *output, device const float *row_sums,
+                                 constant Q4Params &p, uint group, uint lane, uint simd,
+                                 threadgroup float *sums) {
+  const uint count = p.input_size / 64 * 8;
+  for (uint i = simd * 32 + lane; i < count; i += Sg * 32) sums[i] = row_sums[i];
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups)
+    q4_mpp_tile<TileN, false, false, 256, false, Sg, true>(
+        input, weights, scales, biases, output, weights, scales, biases, input,
+        p.output_size, p.input_size, sums, tile * TileN, lane, simd);
+}
+kernel void m5x_n128_plain_devsums(device bfloat *input [[buffer(0)]], device uchar *weights [[buffer(1)]],
+                                   device bfloat *scales [[buffer(2)]], device bfloat *biases [[buffer(3)]],
+                                   device bfloat *output [[buffer(4)]], device const float *row_sums [[buffer(5)]],
+                                   constant Q4Params &params [[buffer(6)]],
+                                   uint group [[threadgroup_position_in_grid]],
+                                   uint lane [[thread_index_in_simdgroup]],
+                                   uint simd [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float sums[272 * 8];
+  m5x_tile_device_sums<128, 8>(input, weights, scales, biases, output, row_sums, params, group, lane, simd, sums);
+}
+// Split form, plain, TileN columns, Sg simdgroups per partition, 4 partitions.
+template <ushort TileN, ushort Sg>
+inline void m5x_split_plain_device_sums(device bfloat *input, device uchar *weights,
+                                        device bfloat *scales, device bfloat *biases,
+                                        device bfloat *output, device const float *row_sums,
+                                        constant Q4Params &p, uint group, uint lane, uint simd,
+                                        threadgroup float *sums, threadgroup float *partials) {
+  constexpr uint Parts = 4, Rows = 8;
+  const uint count = p.input_size / 64 * Rows;
+  for (uint i = simd * 32 + lane; i < count; i += Parts * Sg * 32) sums[i] = row_sums[i];
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint partition = simd / Sg;
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
+    q4_mpp_tile_split<TileN, false, 256, true, Sg, Parts, Rows, 2, true>(
+        input, weights, scales, biases, partials, weights, scales, biases,
+        p.input_size, sums, tile * TileN, lane, simd % Sg, partition);
+    for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * Sg * 32) {
+      float value = 0;
+      for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
+      uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
+      output[index] = bfloat(value);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+kernel void m5x_n64_split4_plain_devsums(device bfloat *input [[buffer(0)]], device uchar *weights [[buffer(1)]],
+                                         device bfloat *scales [[buffer(2)]], device bfloat *biases [[buffer(3)]],
+                                         device bfloat *output [[buffer(4)]], device const float *row_sums [[buffer(5)]],
+                                         constant Q4Params &params [[buffer(6)]],
+                                         uint group [[threadgroup_position_in_grid]],
+                                         uint lane [[thread_index_in_simdgroup]],
+                                         uint simd [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float sums[272 * 8], partials[4 * 8 * 64];
+  m5x_split_plain_device_sums<64, 2>(input, weights, scales, biases, output, row_sums, params, group, lane, simd,
+                                     sums, partials);
+}
