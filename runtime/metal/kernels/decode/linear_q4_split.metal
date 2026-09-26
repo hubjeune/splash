@@ -336,6 +336,16 @@ kernel void m5x_row_sums8(device const bfloat *input [[buffer(0)]],
   float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
   if (lane == 0) sums[g * 8 + row] = sum;
 }
+kernel void decode_linear_q4_row_sums8(device const bfloat *input [[buffer(0)]],
+                          device float *sums [[buffer(1)]],
+                          constant Q4Params &p [[buffer(2)]],
+                          uint g [[threadgroup_position_in_grid]],
+                          uint lane [[thread_index_in_simdgroup]],
+                          uint row [[simdgroup_index_in_threadgroup]]) {
+  uint origin = row * p.input_size + g * 64 + lane;
+  float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
+  if (lane == 0) sums[g * 8 + row] = sum;
+}
 template <ushort Parts>
 inline void m5x_split_device_sums(device bfloat *input, device uchar *weights,
                                   device bfloat *scales, device bfloat *biases,
@@ -381,4 +391,8 @@ inline void m5x_split_device_sums(device bfloat *input, device uchar *weights,
 M5X_DEVICE_SUMS(m5x_n32_p4_devsums, 4)
 M5X_DEVICE_SUMS(m5x_n32_p8_devsums, 8)
 M5X_DEVICE_SUMS(m5x_n32_p17_devsums, 17)
+// Planned by Linear as LinearTile::SplitSums32 (splits 1 = four partitions).
+M5X_DEVICE_SUMS(decode_linear_q4_n32_split4_sums_residual, 4)
+M5X_DEVICE_SUMS(decode_linear_q4_n32_split8_sums_residual, 8)
+M5X_DEVICE_SUMS(decode_linear_q4_n32_split17_sums_residual, 17)
 #undef M5X_DEVICE_SUMS

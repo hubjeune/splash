@@ -62,12 +62,13 @@ std::string tileName(LinearTile t) {
   case LinearTile::Split64: return "split64";
   case LinearTile::Paired256: return "paired256";
   case LinearTile::Simdgroup: return "simdgroup";
+  case LinearTile::SplitSums32: return "splitsums32";
   default: return "other";
   }
 }
 LinearTile tileFrom(const std::string &s) {
   for (auto t : {LinearTile::N128, LinearTile::N256, LinearTile::Paired128, LinearTile::Split32,
-                 LinearTile::Split64, LinearTile::Paired256, LinearTile::Simdgroup})
+                 LinearTile::Split64, LinearTile::Paired256, LinearTile::Simdgroup, LinearTile::SplitSums32})
     if (tileName(t) == s) return t;
   throw std::invalid_argument("unknown tile " + s);
 }
@@ -181,7 +182,8 @@ LinearBuffers linearBuffers(const Buffers &b, const LinearPlan &plan, LinearEpil
   lb.output = b.output;
   if (epilogue == LinearEpilogue::Residual) lb.residual = b.residual;
   if (plan.gateScratchBytes()) lb.gateScratch = b.gateScratch;
-  if (plan.usesSimdgroup()) lb.scratch = LinearScratch{b.table, b.sums, b.partials, b.counters};
+  if (plan.usesSimdgroup() || plan.configuration().tile == LinearTile::SplitSums32)
+    lb.scratch = LinearScratch{b.table, b.sums, b.partials, b.counters};
   return lb;
 }
 

@@ -27,7 +27,8 @@ constexpr uint32_t kSplitInputBlock = kSplitPartitions * 4 * kQuantGroup;
 static_assert(sizeof(LinearMatrix) == 8);
 
 bool splitTile(LinearTile tile) noexcept {
-  return tile == LinearTile::Split32 || tile == LinearTile::Split64;
+  return tile == LinearTile::Split32 || tile == LinearTile::Split64 ||
+      tile == LinearTile::SplitSums32;
 }
 // splash-m5: the N32 split kernels are also instantiated for 16/24/32 rows
 // (two to four lanes), plain and residual, when K splits into whole blocks.
@@ -43,10 +44,20 @@ bool multiLaneSplit(LinearWorkload w, LinearTile tile) noexcept {
 // 1 keeps the four-partition kernel; 8, 17 or 24 select these. Each partition
 // takes whole four-group blocks: K % (256 * splits) == 0.
 bool widerSplit(LinearWorkload w, LinearConfig config) noexcept {
-  return config.tile == LinearTile::Split32 && w.phase == LinearPhase::Decode &&
+  return (config.tile == LinearTile::Split32 || config.tile == LinearTile::SplitSums32) &&
+      w.phase == LinearPhase::Decode &&
       w.rows == SPLASH_TARGET_VERIFY_ROWS && w.epilogue == LinearEpilogue::Residual &&
       (config.splits == 8 || config.splits == 17 || config.splits == 24) &&
       w.matrix.inputSize % (256 * config.splits) == 0;
+}
+// splash-m5: the SplitSums32 kernels (one lane, residual, N32) take row sums a
+// decode_linear_q4_row_sums8 dispatch writes once per projection into
+// LinearScratch::sums ([group][row]), instead of every threadgroup recomputing
+// them from the whole input (FORK.md, H10).
+bool sumsSplit(LinearWorkload w) noexcept {
+  return w.phase == LinearPhase::Decode && w.weightLayout == WeightLayout::Affine64 &&
+      w.rows == SPLASH_TARGET_VERIFY_ROWS && w.epilogue == LinearEpilogue::Residual &&
+      w.matrix.inputSize % kSplitInputBlock == 0 && w.matrix.inputSize / kQuantGroup <= 272;
 }
 bool oneLaneTile(LinearTile tile) noexcept {
   return tile == LinearTile::Paired128 || tile == LinearTile::Paired256 || splitTile(tile);
@@ -56,6 +67,7 @@ bool oneLaneTile(LinearTile tile) noexcept {
 std::optional<LinearSimdgroups> fixedSimdgroups(LinearTile tile) noexcept {
   switch (tile) {
   case LinearTile::Split32:
+  case LinearTile::SplitSums32:
   case LinearTile::Simdgroup:
   case LinearTile::Paired256: return LinearSimdgroups::Four;
   case LinearTile::Split64: return LinearSimdgroups::Eight;
@@ -112,6 +124,7 @@ bool supportsFourSimdgroups(LinearWorkload w, LinearTile tile) noexcept {
   if (tile == LinearTile::Split32)
     return w.phase == LinearPhase::Decode &&
         (w.rows == SPLASH_TARGET_VERIFY_ROWS || multiLaneSplit(w, tile));
+  if (tile == LinearTile::SplitSums32) return sumsSplit(w);
   // Only the affine paired N256 kernel is instantiated: this tile is used
   // for wide plain projections; residual and gate/up retain their own tiles.
   if (tile == LinearTile::Paired256)
@@ -150,7 +163,8 @@ uint32_t LinearPlan::storageRows() const noexcept {
 uint32_t LinearPlan::tileColumns() const noexcept {
   switch (config_.tile) {
   case LinearTile::Simdgroup: return workload_.epilogue == LinearEpilogue::GateUp ? 32 : 64;
-  case LinearTile::Split32: return 32;
+  case LinearTile::Split32:
+  case LinearTile::SplitSums32: return 32;
   case LinearTile::Split64:
   case LinearTile::GgufStaged:
   case LinearTile::GgufRegister: return 64;
@@ -163,14 +177,16 @@ uint32_t LinearPlan::tileColumns() const noexcept {
 }
 uint32_t LinearPlan::threadsPerThreadgroup() const noexcept {
   // splash-m5: a wider split runs one simdgroup per K partition.
-  if (config_.tile == LinearTile::Split32 && config_.splits > 1) return config_.splits * 32;
+  if ((config_.tile == LinearTile::Split32 || config_.tile == LinearTile::SplitSums32) && config_.splits > 1)
+    return config_.splits * 32;
   return static_cast<uint32_t>(config_.simdgroups) * 32;
 }
 uint32_t LinearPlan::partialSums() const noexcept {
   if (usesSimdgroup() || config_.tile == LinearTile::GgufStaged ||
       config_.tile == LinearTile::GgufRegister)
     return config_.splits;
-  if (config_.tile == LinearTile::Split32 && config_.splits > 1) return config_.splits;
+  if ((config_.tile == LinearTile::Split32 || config_.tile == LinearTile::SplitSums32) && config_.splits > 1)
+    return config_.splits;
   return splitTile(config_.tile) ? kSplitPartitions : 1;
 }
 bool LinearPlan::usesSimdgroup() const noexcept { return config_.tile == LinearTile::Simdgroup; }
@@ -180,6 +196,8 @@ LinearInput LinearPlan::input() const noexcept {
 }
 LinearScratchSize LinearPlan::scratchSize() const noexcept {
   if (workload_.weightLayout == WeightLayout::Block32) return blockScratchSize();
+  if (config_.tile == LinearTile::SplitSums32)
+    return {0, uint64_t{workload_.matrix.inputSize / kQuantGroup} * SPLASH_TARGET_VERIFY_ROWS * sizeof(float), 0, 0};
   if (!usesSimdgroup()) return {};
   const auto [n, k] = workload_.matrix;
   const uint64_t rows = workload_.rows;
@@ -279,6 +297,15 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
     if (w.matrix.inputSize % kSplitInputBlock ||
         config.groups != w.matrix.outputSize / tileColumns())
       throw std::invalid_argument("split Q4 tile requires K % 1024 == 0 and the full grid");
+    if (config.tile == LinearTile::SplitSums32) {
+      if (!sumsSplit(w)) throw std::invalid_argument("SplitSums32 takes one-lane residual projections, K <= 17408");
+      // 24 partitions exceed 32 KiB of threadgroup memory next to all-K sums.
+      if (config.splits == 24) throw std::invalid_argument("SplitSums32 supports 4, 8 or 17 partitions");
+      pipeline_ = config.splits == 8 ? "decode_linear_q4_n32_split8_sums_residual"
+                : config.splits == 17 ? "decode_linear_q4_n32_split17_sums_residual"
+                                      : "decode_linear_q4_n32_split4_sums_residual";
+      return;
+    }
     const bool n32 = config.tile == LinearTile::Split32;
     if (w.epilogue == LinearEpilogue::GateUp) {
       // Only the N32 two-stream split kernel is instantiated.
@@ -603,6 +630,12 @@ std::vector<LinearPlan> Linear::candidates(LinearWorkload w) const {
       for (const uint32_t groups : {kPaired256WaveGroupsPerCore * gpuCores_, n / 256})
         append({LinearTile::Paired256, std::min(groups, n / 256), LinearSimdgroups::Four});
   }
+  // splash-m5: SplitSums32 with the upstream four or 8/17/24 K partitions.
+  if (sumsSplit(w))
+    for (const uint32_t splits : {1u, 8u, 17u}) {
+      const LinearConfig c{LinearTile::SplitSums32, w.matrix.outputSize / 32, LinearSimdgroups::Four, splits};
+      if (splits == 1 || widerSplit(w, c)) append(c);
+    }
   // splash-m5: one-lane residual N32 splits with 8, 17 or 24 K partitions.
   for (const uint32_t splits : {8u, 17u, 24u})
     if (const LinearConfig c{LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four, splits};
@@ -676,6 +709,17 @@ PreparedInput Linear::add(metal::CommandGraph &graph, LinearBuffers b,
          w.rows / SPLASH_TARGET_VERIFY_ROWS}, {128, 1, 1});
     if (stats) account(*stats, w.rows / SPLASH_TARGET_VERIFY_ROWS, 1);
     return {b.input, LinearInput::Table64};
+  }
+  if (selected.configuration().tile == LinearTile::SplitSums32) {
+    // splash-m5 (H10): row sums once per projection, then the split kernel.
+    graph.add("decode_linear_q4_row_sums8", {b.input, b.scratch.sums}, Q4Params{n, k, 0}, {k / kQuantGroup, 1, 1},
+              {256, 1, 1});
+    const uint32_t groups = selected.configuration().groups;
+    graph.add(std::string(selected.pipeline()),
+              {b.input, weights.weights, weights.scales, weights.biases, b.residual, b.output, b.scratch.sums},
+              Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
+    if (stats) account(*stats, w.rows / SPLASH_TARGET_VERIFY_ROWS, 1);
+    return b.prepared;
   }
   const auto dispatch = [&](std::string_view name,
       std::initializer_list<metal::MetalBuffer> bindings) {

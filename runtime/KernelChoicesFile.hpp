@@ -9,7 +9,7 @@
 //   5120 17408 8   decode  residual  split32  160     4
 //
 // phase: prefill | decode.  epilogue: none | residual | gateup | upwithgate.
-// tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup.
+// tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup | splitsums32.
 // Only the Affine64 weight layout is covered (the layout of Splash packages
 // and MLX 4-bit checkpoints). Any malformed line fails startup loudly.
 
@@ -47,7 +47,7 @@ inline ops::OperatorChoices loadKernelChoices(const std::string &path) {
       {"n128", LinearTile::N128}, {"n256", LinearTile::N256},
       {"paired128", LinearTile::Paired128}, {"split32", LinearTile::Split32},
       {"split64", LinearTile::Split64}, {"paired256", LinearTile::Paired256},
-      {"simdgroup", LinearTile::Simdgroup}};
+      {"simdgroup", LinearTile::Simdgroup}, {"splitsums32", LinearTile::SplitSums32}};
 
   std::ifstream file(path);
   if (!file) throw std::runtime_error("cannot read kernel choices file " + path);

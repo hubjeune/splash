@@ -1,0 +1,25 @@
+# m5max-40c-swift15-multilane.choices with the one-lane residual projections (FFN down;
+# GDN/attention out) on SplitSums32: row sums once per projection (FORK.md H10;
+# kernel +26% / +19%). Two-to-four-lane rows as in the multilane file.
+# plain projections keep their defaults.
+#
+# out   in     rows phase   epilogue  tile     groups simdgroups
+256     5120   8    decode  none      split64  4      8
+5120    4096   8    decode  none      split32  160    4
+5120    6144   8    decode  residual  splitsums32 160  4
+5120    17408  8    decode  none      split32  160    4
+5120    17408  8    decode  residual  splitsums32 160  4
+5120    25600  8    decode  none      split32  160    4
+6144    5120   8    decode  none      split64  96     8
+6144    5120   24   decode  none      n256     24     8
+6144    5120   256  prefill none      n256     0      8
+14336   5120   8    decode  none      split64  224    8
+14336   5120   32   decode  none      n256     56     8
+16640   5120   8    decode  none      n128     130    8
+16640   5120   32   decode  none      n256     65     8
+5120    17408  16   decode  residual  split32  160    4
+5120    17408  24   decode  residual  split32  160    4
+5120    17408  32   decode  residual  split32  160    8
+5120    6144   16   decode  residual  split32  160    4
+5120    6144   24   decode  residual  split32  160    4
+5120    6144   32   decode  residual  split32  160    8
