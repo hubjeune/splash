@@ -1,5 +1,29 @@
 #include "metal/kernels/common/paged_attention_tile.h"
 
+// splash-m5 A2 (experiment): two pages per iteration in the verify split tile.
+#ifndef SPLASH_M5_ATTN_PAGES2
+#define SPLASH_M5_ATTN_PAGES2 0
+#endif
+#ifndef SPLASH_M5_ATTN_STAGED
+#define SPLASH_M5_ATTN_STAGED 0
+#endif
+#if SPLASH_M5_ATTN_PAGES2
+#define SPLASH_M5_VERIFY_TILE splash_paged_attention_tile2
+#elif SPLASH_M5_ATTN_STAGED
+#define SPLASH_M5_VERIFY_TILE splash_paged_attention_tile_staged
+#else
+#define SPLASH_M5_VERIFY_TILE splash_paged_attention_tile
+#endif
+#if SPLASH_M5_ATTN_STAGED
+#define SPLASH_M5_STAGE_SCRATCH                                                \
+  [[maybe_unused]] alignas(16) threadgroup int8_t key_stage[SplashQ8PageTokens * SplashQ8HeadDimension]; \
+  [[maybe_unused]] alignas(16) threadgroup int8_t value_stage[SplashQ8PageTokens * SplashQ8HeadDimension];
+#define SPLASH_M5_STAGE_ARGS key_stage, value_stage,
+#else
+#define SPLASH_M5_STAGE_SCRATCH
+#define SPLASH_M5_STAGE_ARGS
+#endif
+
 // Verify tiles process one lane's eight rows per KV head and history split.
 // Verify and prefill share the device-operand page loop in paged_attention_tile.h.
 
@@ -72,13 +96,14 @@ inline SplashQ8VerifyTile splash_q8_verify_attention_tile_at(
 
 #define Q8_VERIFY_SCRATCH(Group)                                               \
   constexpr uint M = Group * SPLASH_TARGET_VERIFY_ROWS;                        \
-  constexpr uint N = SplashQ8PageTokens;                                       \
+  constexpr uint N = SplashQ8PageTokens * (SPLASH_M5_ATTN_PAGES2 ? 2 : 1);     \
   alignas(16) threadgroup float scores[M * N];                                 \
   alignas(16) threadgroup bfloat probabilities[M * N];                         \
   threadgroup float row_max[M];                                                \
   threadgroup float row_sum[M];                                                \
   threadgroup float previous_scale[M];                                         \
-  threadgroup atomic_uint rescale;
+  threadgroup atomic_uint rescale;                                             \
+  SPLASH_M5_STAGE_SCRATCH
 
 #define Q8_VERIFY_TILE_AT(Heads, Group)                                        \
   const SplashQ8VerifyTile tile =                                              \
@@ -92,14 +117,14 @@ inline SplashQ8VerifyTile splash_q8_verify_attention_tile_at(
   Q8_VERIFY_SPLIT_SIGNATURE(Name) {                                            \
     Q8_VERIFY_SCRATCH(Group)                                                   \
     Q8_VERIFY_TILE_AT(Heads, Group)                                            \
-    splash_paged_attention_tile<Heads, Group,                                  \
+    SPLASH_M5_VERIFY_TILE<Heads, Group,                                        \
                                       SPLASH_TARGET_VERIFY_ROWS,               \
                                       ScaleInSoftmax>(                         \
         tile.queries, cache_keys, key_scales_buffer, cache_values, value_scales_buffer,\
         tile.page_table, tile.kv_head, tile.committed_tokens, tile.active_rows,\
         tile.splits, tile.split, partials, statistics, tile.slot, scores,      \
         probabilities, row_max, row_sum, previous_scale, &rescale,             \
-        thread_index);                                                         \
+        SPLASH_M5_STAGE_ARGS thread_index);                                    \
   }
 
 Q8_VERIFY_SPLIT(verify_attention_q8_split, 4, 6, true)

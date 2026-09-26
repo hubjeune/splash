@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -180,6 +182,29 @@ public:
            std::memcmp(left.contents(), right.contents(), left.sizeBytes()) == 0;
   }
 
+  // splash-m5: bf16 output agreement with another build: worst |difference|
+  // relative to the largest |output|, and the share of values that differ.
+  void describeDifference(const Fixture &other) const {
+    const auto left = get(Tensor::Output), right = other.get(Tensor::Output);
+    const auto *a = static_cast<const uint16_t *>(left.contents());
+    const auto *b = static_cast<const uint16_t *>(right.contents());
+    const size_t count = left.sizeBytes() / 2;
+    const auto value = [](uint16_t h) { uint32_t u = uint32_t(h) << 16; float f; std::memcpy(&f, &u, 4); return f; };
+    double worst = 0, largest = 0, sumSquares = 0, sumReference = 0;
+    size_t differ = 0;
+    for (size_t i = 0; i < count; ++i) {
+      const double x = value(a[i]), y = value(b[i]);
+      worst = std::max(worst, std::abs(x - y));
+      largest = std::max(largest, std::abs(x));
+      sumSquares += (x - y) * (x - y);
+      sumReference += x * x;
+      differ += a[i] != b[i];
+    }
+    std::cerr << "  output vs base: worst " << worst / largest << " of max|out|, rms "
+              << std::sqrt(sumSquares / std::max(sumReference, 1e-30)) << ", " << 100.0 * differ / count
+              << "% of " << count << " values differ\n";
+  }
+
   uint64_t historyBytes() const {
     // Both cache payloads, including scales only for INT8.
     uint64_t tokens = 0;
@@ -294,9 +319,11 @@ std::vector<Case> measure(std::span<metal::MetalBackend *> backends,
   while (warmup < 0.1)
     for (size_t i = 0; i < backends.size(); ++i)
       warmup += backends[i]->submitCommand(graphs[i].dispatches()).gpuSeconds;
-  for (size_t i = 1; i < fixtures.size(); ++i)
-    if (!fixtures[0]->sameOutput(*fixtures[i]))
+  for (size_t i = 1; i < fixtures.size(); ++i) {
+    if (std::getenv("SPLASH_M5_NO_BIT_CHECK")) fixtures[0]->describeDifference(*fixtures[i]);
+    else if (!fixtures[0]->sameOutput(*fixtures[i]))
       throw std::runtime_error("comparison metallib changed attention output bits");
+  }
   std::vector<std::vector<double>> fused(backends.size());
   std::vector<std::map<std::string, std::vector<double>>> perPipeline(backends.size());
   for (uint32_t round = 0; round < repeat; ++round)
