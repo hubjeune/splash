@@ -459,3 +459,65 @@ kernel void m5x_n64_split4_plain_devsums(device bfloat *input [[buffer(0)]], dev
   m5x_split_plain_device_sums<64, 2>(input, weights, scales, biases, output, row_sums, params, group, lane, simd,
                                      sums, partials);
 }
+
+// H12: two-to-four-lane residual N32 split kernels reading once-per-projection
+// row sums from device memory ([group][row], Rows = 16/24/32), written by
+// decode_linear_q4_row_sums (grid K/64 threadgroups of Rows * 32 threads).
+kernel void decode_linear_q4_row_sums(device const bfloat *input [[buffer(0)]],
+                                      device float *sums [[buffer(1)]],
+                                      constant Q4Params &p [[buffer(2)]],
+                                      uint g [[threadgroup_position_in_grid]],
+                                      uint lane [[thread_index_in_simdgroup]],
+                                      uint row [[simdgroup_index_in_threadgroup]],
+                                      uint rows [[simdgroups_per_threadgroup]]) {
+  uint origin = row * p.input_size + g * 64 + lane;
+  float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
+  if (lane == 0) sums[g * rows + row] = sum;
+}
+template <ushort Rows, ushort Sg>
+inline void m5_split_rows_device_sums(device bfloat *input, device uchar *weights,
+                                      device bfloat *scales, device bfloat *biases,
+                                      device bfloat *residual, device bfloat *output,
+                                      device const float *row_sums, constant Q4Params &p,
+                                      uint group, uint lane, uint simd,
+                                      threadgroup float *partials) {
+  constexpr uint TileN = 32, Parts = 4;
+  uint partition = simd / Sg;
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
+    q4_mpp_tile_split<TileN, false, 256, true, Sg, Parts, Rows, 2, true, 0, true>(
+        input, weights, scales, biases, partials, weights, scales, biases,
+        p.input_size, partials, tile * TileN, lane, simd % Sg, partition, row_sums);
+    for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * Sg * 32) {
+      float value = 0;
+      for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
+      uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
+      value = float(bfloat(value)) + float(residual[index]);
+      output[index] = bfloat(value);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+#define M5_SPLIT_ROWS_SUMS(Name, Rows, Sg)                                     \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   device const float *row_sums [[buffer(6)]],                 \
+                   constant Q4Params &params [[buffer(7)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float partials[4 * Rows * 32];                                 \
+    m5_split_rows_device_sums<Rows, Sg>(input, weights, scales, biases,        \
+                                        residual, output, row_sums, params,    \
+                                        group, lane, simd, partials);          \
+  }
+M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m16, 16, 1)
+M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m24, 24, 1)
+M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m32, 32, 1)
+M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m16_sg8, 16, 2)
+M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m24_sg8, 24, 2)
+M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m32_sg8, 32, 2)
+#undef M5_SPLIT_ROWS_SUMS

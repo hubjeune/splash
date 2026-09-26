@@ -388,7 +388,7 @@ inline void q4_mpp_tile_batched(
 template <ushort TileN, bool GateUp, ushort StorageN = TileN,
           bool Pipelined = true, ushort Simdgroups = 8, ushort SplitK = 4,
           ushort Rows = 8, ushort Depth = 2, bool SumsReady = false,
-          ushort Diag = 0>
+          ushort Diag = 0, bool DeviceSums = false>
 inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
                               device bfloat *scales_0, device bfloat *biases_0,
                               threadgroup float *partials,
@@ -396,7 +396,10 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
                               device bfloat *biases_1, uint input_size,
                               threadgroup float *input_sums,
                               uint output_origin, uint simd_lane,
-                              uint simd_group, uint partition) {
+                              uint simd_group, uint partition,
+                              device const float *device_sums = nullptr) {
+  // splash-m5 (DeviceSums, needs SumsReady): row sums [group][row] for all of K
+  // are read from device memory (too large for threadgroup memory past 8 rows).
   auto a = tensor(input, dextents<int, 2>{int(input_size), Rows},
                   array<int, 2>{1, int(input_size)});
   constexpr auto descriptor =
@@ -484,6 +487,10 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       // splash-m5 diagnostics: Diag 1/3 drop the scale/bias epilogue (and its loads).
       if constexpr (Diag == 1 || Diag == 3 || Diag == 4)
         accumulated_0[i] += (Diag >= 3 ? 0.0f : partial_0[i]) + input_sums[sum_offset + row];
+      else if constexpr (DeviceSums)
+      accumulated_0[i] +=
+          partial_0[i] * float(scales_0[parameter]) +
+          device_sums[sum_offset + row] * float(biases_0[parameter]);
       else
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
