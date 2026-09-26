@@ -38,6 +38,16 @@ bool multiLaneSplit(LinearWorkload w, LinearTile tile) noexcept {
       (w.epilogue == LinearEpilogue::None || w.epilogue == LinearEpilogue::Residual) &&
       w.matrix.inputSize % kSplitInputBlock == 0;
 }
+// splash-m5: one-lane residual N32 split kernels with more K partitions than
+// the upstream four (linear_q4_split.metal), carried in LinearConfig::splits:
+// 1 keeps the four-partition kernel; 8, 17 or 24 select these. Each partition
+// takes whole four-group blocks: K % (256 * splits) == 0.
+bool widerSplit(LinearWorkload w, LinearConfig config) noexcept {
+  return config.tile == LinearTile::Split32 && w.phase == LinearPhase::Decode &&
+      w.rows == SPLASH_TARGET_VERIFY_ROWS && w.epilogue == LinearEpilogue::Residual &&
+      (config.splits == 8 || config.splits == 17 || config.splits == 24) &&
+      w.matrix.inputSize % (256 * config.splits) == 0;
+}
 bool oneLaneTile(LinearTile tile) noexcept {
   return tile == LinearTile::Paired128 || tile == LinearTile::Paired256 || splitTile(tile);
 }
@@ -152,12 +162,15 @@ uint32_t LinearPlan::tileColumns() const noexcept {
   return 0;
 }
 uint32_t LinearPlan::threadsPerThreadgroup() const noexcept {
+  // splash-m5: a wider split runs one simdgroup per K partition.
+  if (config_.tile == LinearTile::Split32 && config_.splits > 1) return config_.splits * 32;
   return static_cast<uint32_t>(config_.simdgroups) * 32;
 }
 uint32_t LinearPlan::partialSums() const noexcept {
   if (usesSimdgroup() || config_.tile == LinearTile::GgufStaged ||
       config_.tile == LinearTile::GgufRegister)
     return config_.splits;
+  if (config_.tile == LinearTile::Split32 && config_.splits > 1) return config_.splits;
   return splitTile(config_.tile) ? kSplitPartitions : 1;
 }
 bool LinearPlan::usesSimdgroup() const noexcept { return config_.tile == LinearTile::Simdgroup; }
@@ -208,7 +221,7 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
     requireBlockConfiguration();
     return;
   }
-  if (config.tile != LinearTile::Simdgroup && config.splits != 1)
+  if (config.tile != LinearTile::Simdgroup && config.splits != 1 && !widerSplit(w, config))
     throw std::invalid_argument("K splits require the simdgroup Q4 tile");
   if (config.tile != LinearTile::N128 && config.tile != LinearTile::N256 &&
       config.tile != LinearTile::Simdgroup && !oneLaneTile(config.tile))
@@ -271,6 +284,11 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
       // Only the N32 two-stream split kernel is instantiated.
       if (!n32) throw std::invalid_argument("Q4 split gate/up requires Split32");
       pipeline_ = "decode_linear_q4_n32_split4_gate_up";
+    } else if (residual && config.splits > 1) {
+      // splash-m5: widerSplit() has already required N32, one lane and residual.
+      pipeline_ = config.splits == 8 ? "decode_linear_q4_n32_split8_residual"
+                : config.splits == 17 ? "decode_linear_q4_n32_split17_residual"
+                                      : "decode_linear_q4_n32_split24_residual";
     } else if (residual) {
       pipeline_ = n32 ? "decode_linear_q4_n32_split4_residual"
                       : "decode_linear_q4_n64_split4_residual";
@@ -585,6 +603,11 @@ std::vector<LinearPlan> Linear::candidates(LinearWorkload w) const {
       for (const uint32_t groups : {kPaired256WaveGroupsPerCore * gpuCores_, n / 256})
         append({LinearTile::Paired256, std::min(groups, n / 256), LinearSimdgroups::Four});
   }
+  // splash-m5: one-lane residual N32 splits with 8, 17 or 24 K partitions.
+  for (const uint32_t splits : {8u, 17u, 24u})
+    if (const LinearConfig c{LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four, splits};
+        widerSplit(w, c))
+      append(c);
   // splash-m5: the N32 split tile for two to four lanes (plain and residual).
   if (multiLaneSplit(w, LinearTile::Split32)) {
     append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four});

@@ -213,4 +213,9 @@ M5X_SPLIT_RESIDUAL(m5x_n32_p4_d4_residual, 32, 4, 4)
 M5X_SPLIT_RESIDUAL(m5x_n32_p8_d4_residual, 32, 8, 4)
 M5X_SPLIT_RESIDUAL(m5x_n32_p17_d4_residual, 32, 17, 4)
 M5X_SPLIT_RESIDUAL(m5x_n32_p24_d4_residual, 32, 24, 4)
+// Planned by Linear (widerSplit): one-lane residual N32 with 8, 17 or 24 K
+// partitions of one simdgroup each (256, 544 and 768 threads).
+M5X_SPLIT_RESIDUAL(decode_linear_q4_n32_split8_residual, 32, 8, 2)
+M5X_SPLIT_RESIDUAL(decode_linear_q4_n32_split17_residual, 32, 17, 2)
+M5X_SPLIT_RESIDUAL(decode_linear_q4_n32_split24_residual, 32, 24, 2)
 #undef M5X_SPLIT_RESIDUAL
