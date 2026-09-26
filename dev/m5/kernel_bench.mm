@@ -237,6 +237,11 @@ std::string check(metal::MetalBackend &backend, const Variant &v, const Shape &s
   const std::vector<uint16_t> first(out, out + uint64_t(rows) * shape.n);
   (void)backend.submitCommand(graph.dispatches());
   if (std::memcmp(first.data(), out, 2ULL * rows * shape.n) != 0) return "NONDETERMINISTIC";
+  // SPLASH_M5_DUMP=DIR: the output, to compare builds bit for bit.
+  if (const char *dump = std::getenv("SPLASH_M5_DUMP")) {
+    const std::string path = std::string(dump) + "/" + shape.name + "_r" + std::to_string(rows) + "_" + v.label;
+    if (FILE *f = std::fopen(path.c_str(), "wb")) { std::fwrite(first.data(), 2, first.size(), f); std::fclose(f); }
+  }
   const auto *r = static_cast<const uint16_t *>(b.residual.contents());
   const uint32_t splits = std::max<uint32_t>(v.splits, 4);
   uint32_t checked = 0;
