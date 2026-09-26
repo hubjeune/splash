@@ -352,7 +352,7 @@ kernel void decode_linear_q4_row_sums8(device const bfloat *input [[buffer(0)]],
   float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
   if (lane == 0) sums[g * 8 + row] = sum;
 }
-template <ushort Parts, bool Residual = true, class Out = bfloat>
+template <ushort Parts, bool Residual = true, class Out = bfloat, ushort Early = 0>
 inline void m5x_split_device_sums(device bfloat *input, device uchar *weights,
                                   device bfloat *scales, device bfloat *biases,
                                   device bfloat *residual, device Out *output,
@@ -364,7 +364,7 @@ inline void m5x_split_device_sums(device bfloat *input, device uchar *weights,
   for (uint i = simd * 32 + lane; i < count; i += Parts * 32) sums[i] = row_sums[i];
   threadgroup_barrier(mem_flags::mem_threadgroup);
   for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
-    q4_mpp_tile_split<TileN, false, 256, true, 1, Parts, Rows, 2, true>(
+    q4_mpp_tile_split<TileN, false, 256, true, 1, Parts, Rows, 2, true, 0, false, Early>(
         input, weights, scales, biases, partials, weights, scales, biases,
         p.input_size, sums, tile * TileN, lane, 0, simd);
     for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * 32) {
@@ -699,3 +699,156 @@ M5X_ML_DIAG(m5x_ml_sums_diag1_sg1_m24, 24, 1, 1)
 M5X_ML_DIAG(m5x_ml_sums_diag2_sg1_m24, 24, 1, 2)
 M5X_ML_DIAG(m5x_ml_sums_diag1_sg1_m8, 8, 1, 1)
 #undef M5X_ML_DIAG
+
+// Epilogue redesign, idea 1 (experiment): one-lane residual N32 split with the
+// bias term taken out of the per-group loop. The loop accumulates only
+// partial * scale; afterwards each partition adds sum x bias over its groups as
+// matmul2d calls (float row sums [row][group] x bf16 biases read in place,
+// fp32 accumulation). TransposeB selects the biases' layout interpretation.
+template <ushort Parts, bool TransposeB>
+inline void m5x_bias_matmul_split(device bfloat *input, device uchar *weights,
+                                  device bfloat *scales, device bfloat *biases,
+                                  device bfloat *residual, device bfloat *output,
+                                  device const float *row_sums, constant Q4Params &p,
+                                  uint group, uint lane, uint simd,
+                                  threadgroup float *sums, threadgroup float *partials,
+                                  threadgroup float *bias_tiles) {
+  constexpr uint TileN = 32, Rows = 8, StorageN = 256;
+  const uint G = p.input_size / 64;
+  // Row sums arrive [group][row]; stage them [row][group] (K contiguous per row).
+  for (uint i = simd * 32 + lane; i < G * Rows; i += Parts * 32) {
+    uint g = i / Rows, row = i % Rows;
+    sums[row * G + g] = row_sums[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  const uint Gp = G / Parts, first_group = simd * Gp;
+  for (uint tile = group; tile < p.output_size / TileN; tile += p.persistent_groups) {
+    const uint output_origin = tile * TileN;
+    const uint storage_tile = output_origin / StorageN, tile_offset = output_origin % StorageN;
+    // 1. Main loop without the bias term (Diag 5 = scale-only epilogue).
+    q4_mpp_tile_split<TileN, false, 256, true, 1, Parts, Rows, 2, true, 5>(
+        input, weights, scales, biases, partials, weights, scales, biases,
+        p.input_size, sums, output_origin, lane, 0, simd);
+    // 2. Bias term: sums[rows x Gp] x biases[Gp x 32], one matmul with dynamic K.
+    //    Tensor extents are (x, y) = (column, row). A = sums, x = group (stride 1),
+    //    y = row (stride G). B = biases: NN form x = column (stride 1), y = group
+    //    (stride StorageN); NT form (TransposeB) x = group, y = column.
+    auto a = tensor(sums + first_group, dextents<int, 2>{int(Gp), int(Rows)}, array<int, 2>{1, int(G)});
+    constexpr auto descriptor = matmul2d_descriptor(Rows, TileN, static_cast<int>(dynamic_extent), false,
+                                                    TransposeB, false,
+                                                    matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<descriptor, execution_simdgroups<1>> bias_op;
+    device bfloat *bias_base = biases + (ulong(storage_tile) * G + first_group) * StorageN + tile_offset;
+    auto b = TransposeB
+        ? tensor(bias_base, dextents<int, 2>{int(Gp), int(TileN)}, array<int, 2>{int(StorageN), 1})
+        : tensor(bias_base, dextents<int, 2>{int(TileN), int(Gp)}, array<int, 2>{1, int(StorageN)});
+    auto bias_acc = bias_op.template get_destination_cooperative_tensor<decltype(a), decltype(b), float>();
+    for (ushort i = 0; i < bias_acc.get_capacity(); ++i) bias_acc[i] = 0.0f;
+    bias_op.run(a, b, bias_acc);
+    // 3. Add the bias tile into this partition's partials ([row][col]).
+    for (ushort i = 0; i < bias_acc.get_capacity(); ++i) {
+      if (!bias_acc.is_valid_element(i)) continue;
+      auto index = bias_acc.get_multidimensional_index(i);
+      partials[simd * Rows * TileN + index[1] * TileN + index[0]] += bias_acc[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = simd * 32 + lane; i < Rows * TileN; i += Parts * 32) {
+      float value = 0;
+      for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
+      uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
+      value = float(bfloat(value)) + float(residual[index]);
+      output[index] = bfloat(value);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  (void)bias_tiles;
+}
+#define M5X_BIAS_MATMUL(Name, Parts, TransposeB)                               \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   device const float *row_sums [[buffer(6)]],                 \
+                   constant Q4Params &params [[buffer(7)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[272 * 8], partials[Parts * 8 * 32], bias_tiles[1];  \
+    m5x_bias_matmul_split<Parts, TransposeB>(input, weights, scales, biases,   \
+        residual, output, row_sums, params, group, lane, simd, sums, partials, \
+        bias_tiles);                                                           \
+  }
+M5X_BIAS_MATMUL(m5x_biasmm_t_sums_residual, 4, true)
+M5X_BIAS_MATMUL(m5x_biasmm_n_sums_residual, 4, false)
+#undef M5X_BIAS_MATMUL
+
+// H18 experiment: the one-lane sums kernels with early scale/bias loads.
+#define M5X_EARLY_RES(Name, Parts)                                             \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *residual [[buffer(4)]],                      \
+                   device bfloat *output [[buffer(5)]],                        \
+                   device const float *row_sums [[buffer(6)]],                 \
+                   constant Q4Params &params [[buffer(7)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[272 * 8], partials[Parts * 8 * 32];                 \
+    m5x_split_device_sums<Parts, true, bfloat, true>(input, weights, scales,   \
+        biases, residual, output, row_sums, params, group, lane, simd, sums,   \
+        partials);                                                             \
+  }
+M5X_EARLY_RES(m5x_early_sums_residual, 4)
+#undef M5X_EARLY_RES
+#define M5X_EARLY_PLAIN(Name, Parts)                                           \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *output [[buffer(4)]],                        \
+                   device const float *row_sums [[buffer(5)]],                 \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[272 * 8], partials[Parts * 8 * 32];                 \
+    m5x_split_device_sums<Parts, false, bfloat, true>(input, weights, scales,  \
+        biases, input, output, row_sums, params, group, lane, simd, sums,      \
+        partials);                                                             \
+  }
+M5X_EARLY_PLAIN(m5x_early_sums, 4)
+#undef M5X_EARLY_PLAIN
+#define M5X_SHUF(Name, Residual, Out4)                                         \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *Out4 [[buffer(4)]],                          \
+                   device bfloat *output [[buffer(5)]],                        \
+                   device const float *row_sums [[buffer(6)]],                 \
+                   constant Q4Params &params [[buffer(7)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float sums[272 * 8], partials[4 * 8 * 32];                     \
+    m5x_split_device_sums<4, Residual, bfloat, 2>(input, weights, scales,      \
+        biases, Out4, output, row_sums, params, group, lane, simd, sums,       \
+        partials);                                                             \
+  }
+M5X_SHUF(m5x_shuf_sums_residual, true, residual)
+#undef M5X_SHUF
+kernel void m5x_shuf_sums(device bfloat *input [[buffer(0)]], device uchar *weights [[buffer(1)]],
+                          device bfloat *scales [[buffer(2)]], device bfloat *biases [[buffer(3)]],
+                          device bfloat *output [[buffer(4)]], device const float *row_sums [[buffer(5)]],
+                          constant Q4Params &params [[buffer(6)]],
+                          uint group [[threadgroup_position_in_grid]],
+                          uint lane [[thread_index_in_simdgroup]],
+                          uint simd [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float sums[272 * 8], partials[4 * 8 * 32];
+  m5x_split_device_sums<4, false, bfloat, 2>(input, weights, scales, biases, input, output, row_sums,
+                                             params, group, lane, simd, sums, partials);
+}
