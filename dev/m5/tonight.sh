@@ -8,6 +8,9 @@
 #      temperature; the fork server writes the acceptance log (draft-length study).
 #   B  quality: the 95-task set (converter/bench_quality.py --task-set all) on the official
 #      27B, fork then stock.
+#   D  Qwen3.6-35B-A3B stock vs fork (regression check, no choices).
+#   E  64K context, official 27B, C = 1-2.
+#   F  Swift-1.5 Q4_K_M and Q6_K GGUF downloads for tomorrow.
 #   C  Splash's own ABBA harness (dev/benchmarks/http_regression.py), official 27B, stock
 #      baseline vs fork candidate, contexts 2,048 and 32,768 (decode ms/token and TTFT).
 set -u
@@ -19,6 +22,7 @@ PY=/opt/homebrew/opt/splash/libexec/python/bin/python3
 CHOICES=$FORK/tuning/m5max-40c-swift15-v8.choices
 OFFICIAL=$(ls -d $HOME/.cache/huggingface/hub/models--incoai--Qwen3.8-27B-Splash/snapshots/* | head -1)
 SWIFT=$PROJECT/output/swift15-splash
+QWEN36=$(ls -d $HOME/.cache/huggingface/hub/models--incoai--Qwen3.6-35B-A3B-Splash/snapshots/* | head -1)
 export SPLASH_API_KEY=$(cat ~/.splash/api-key)
 mkdir -p $OUT
 log() { print -r -- "$(date +%H:%M:%S) $*" | tee -a $OUT/night.log; }
@@ -35,16 +39,19 @@ start() {  # start LABEL PORT PACKAGE MODEL_ID [ENV...]
 }
 stop() { for p in "$@"; do for pid in $(pgrep -f "port $p"); do kill $pid; done; done; sleep 8; }
 
-phase_a() {  # phase_a NAME PACKAGE MODEL_ID
-  local name=$1 pkg=$2 model=$3
+phase_a() {  # phase_a NAME PACKAGE MODEL_ID [CHOICES|none] [EXTRA serve_bench ARGS...]
+  local name=$1 pkg=$2 model=$3 choices=${4:-$CHOICES}; (( $# >= 4 )) && shift 4 || shift $#
+  local extra=("$@") fork_env=(SPLASH_M5_ACCEPT_LOG=$OUT/accept-$name.log)
+  [ $choices != none ] && fork_env+=(SPLASH_KERNEL_CHOICES=$choices)
+  (( ${#extra} )) || extra=(--concurrency 1,2,3,4)
   log "A $name: start"
   start stock 8041 $pkg $model
-  start fork 8042 $pkg $model SPLASH_KERNEL_CHOICES=$CHOICES SPLASH_M5_ACCEPT_LOG=$OUT/accept-$name.log
+  start fork 8042 $pkg $model $fork_env
   for r in 1 2; do
     order=(stock:8041 fork:8042); [ $r = 2 ] && order=(fork:8042 stock:8041)
     for e in $order; do
       python3 $FORK/dev/m5/serve_bench.py --label ${e%%:*} --port ${e#*:} --model $model \
-        --concurrency 1,2,3,4 --round $r --out $OUT/steady-$name.jsonl 2>&1 | tee -a $OUT/night.log
+        --round $r --out $OUT/steady-$name.jsonl $extra 2>&1 | tee -a $OUT/night.log
     done
   done
   python3 $FORK/dev/m5/accept_hist.py $OUT/accept-$name.log > $OUT/accept-$name.txt 2>&1
@@ -55,6 +62,10 @@ phase_a() {  # phase_a NAME PACKAGE MODEL_ID
 log "night start (waits for nothing; run at 22:00 by the caller)"
 phase_a official $OFFICIAL incoai/Qwen3.8-27B-Splash
 phase_a swift $SWIFT local/Swift-1.5-4bit-MLX-Splash
+# D  Qwen3.6-35B-A3B regression check: the fork carries no tuned choices for its shapes.
+phase_a qwen36 $QWEN36 incoai/Qwen3.6-35B-A3B-Splash none
+# E  64K context: a distinct ~64K-token document before each request, 2,048 tokens out.
+phase_a official-64k $OFFICIAL incoai/Qwen3.8-27B-Splash $CHOICES --concurrency 1,2 --context-tokens 65536 --max-tokens 2048
 
 log "B quality: start"
 for e in fork:8042 stock:8041; do
@@ -74,4 +85,10 @@ log "C harness: start"
    --model incoai/Qwen3.8-27B-Splash --max-memory 30G --contexts 2048,32768 --samples 3 \
    --output $OUT/http-regression.json) > $OUT/http-regression.txt 2>&1
 log "C harness: exit $? $(tail -3 $OUT/http-regression.txt | tr '\n' ' ')"
+# F  tomorrow's GGUF work: Swift-1.5 Q4_K_M and Q6_K (downloads only, after all timing).
+log "F downloads: start"
+for q in Q4_K_M Q6_K; do
+  hf download ukisai/Swift-1.5-Qwen3.8-27B-GGUF Swift-1.5-Qwen3.8-27B-$q.gguf > $OUT/download-$q.txt 2>&1
+  log "F download $q: exit $?"
+done
 log "night done"

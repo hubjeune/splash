@@ -29,11 +29,11 @@ PROBLEMS = [
 KEY = open(os.path.expanduser("~/.splash/api-key")).read().strip()
 
 
-def stream(port, model, lane, max_tokens, reasoning):
+def stream(port, model, lane, max_tokens, reasoning, prefix=""):
     body = {"model": model, "stream": True, "stream_options": {"include_usage": True},
             "max_tokens": max_tokens, "temperature": 1.0, "top_p": 0.95, "top_k": 20,
             "reasoning_effort": reasoning,
-            "messages": [{"role": "user", "content": PROBLEMS[lane % len(PROBLEMS)]}]}
+            "messages": [{"role": "user", "content": (f"Here is a document:\n\n{prefix}\n\nIgnore the document. " if prefix else "") + PROBLEMS[lane % len(PROBLEMS)]}]}
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(),
                                  {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
     chunks, usage, finish = [], None, None  # (time, characters)
@@ -52,7 +52,8 @@ def stream(port, model, lane, max_tokens, reasoning):
                 if text:
                     chunks.append((time.perf_counter(), len(text)))
                 finish = choice.get("finish_reason") or finish
-    return {"chunks": chunks, "tokens": usage["completion_tokens"] if usage else None, "finish": finish}
+    return {"chunks": chunks, "tokens": usage["completion_tokens"] if usage else None, "finish": finish,
+            "prompt_tokens": usage["prompt_tokens"] if usage else None}
 
 
 class Power:
@@ -87,12 +88,15 @@ class Power:
                 "gpu_temp_mean": sum(x[3] for x in s) / len(s), "gpu_temp_max": max(x[3] for x in s)}
 
 
-def run(port, model, c, max_tokens, reasoning):
+def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None):
     power = Power()
     time.sleep(1.0)
     start = time.perf_counter()
     with ThreadPoolExecutor(c) as pool:
-        results = list(pool.map(lambda lane: stream(port, model, lane, max_tokens, reasoning), range(c)))
+        # A distinct passage per lane (about 4.2 characters per token), so lanes share no prefix.
+        prefixes = [corpus[lane * int(context_tokens * 4.4):][:int(context_tokens * 4.2)] if context_tokens else ""
+                    for lane in range(c)]
+        results = list(pool.map(lambda lane: stream(port, model, lane, max_tokens, reasoning, prefixes[lane]), range(c)))
     wall = time.perf_counter() - start
     time.sleep(0.5)
     power.stop()
@@ -107,7 +111,8 @@ def run(port, model, c, max_tokens, reasoning):
     tokens = sum(r["tokens"] or 0 for r in results)
     row = {"concurrency": c, "steady_tok_s": steady_tokens / window, "naive_tok_s": tokens / wall,
            "window_s": window, "wall_s": wall, "tokens": tokens,
-           "finish": [r["finish"] for r in results], **power.window(first, last)}
+           "finish": [r["finish"] for r in results], "prompt_tokens": [r["prompt_tokens"] for r in results],
+           **power.window(first, last)}
     if "package_w" in row:
         row["joules_per_token"] = row["package_w"] * window / max(steady_tokens, 1)
     return row
@@ -122,10 +127,14 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=4096)
     ap.add_argument("--reasoning", default="medium")
     ap.add_argument("--round", type=int, default=1)
+    ap.add_argument("--context-tokens", type=int, default=0, help="long document before each prompt")
+    ap.add_argument("--corpus", default=os.path.expanduser("~/Models/splash/swift-splash-project/evaluation/corpora/wiki.test.raw"))
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    corpus = open(a.corpus).read() if a.context_tokens else None
     for c in [int(x) for x in a.concurrency.split(",")]:
-        row = {"label": a.label, "model": a.model, "round": a.round, **run(a.port, a.model, c, a.max_tokens, a.reasoning)}
+        row = {"label": a.label, "model": a.model, "round": a.round, "context_tokens": a.context_tokens,
+               **run(a.port, a.model, c, a.max_tokens, a.reasoning, a.context_tokens, corpus)}
         with open(a.out, "a") as f:
             f.write(json.dumps(row) + "\n")
         print(f"{a.label:6} r{a.round} C={c}: steady {row['steady_tok_s']:6.1f} tok/s (naive {row['naive_tok_s']:6.1f})"
