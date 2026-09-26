@@ -59,7 +59,10 @@ bool sumsSplit(LinearWorkload w) noexcept {
   // four lanes read them from device memory (H12).
   return w.phase == LinearPhase::Decode && w.weightLayout == WeightLayout::Affine64 &&
       (w.rows == 8 || w.rows == 16 || w.rows == 24 || w.rows == 32) &&
-      w.epilogue == LinearEpilogue::Residual && w.matrix.inputSize % kSplitInputBlock == 0 &&
+      (w.epilogue == LinearEpilogue::Residual ||
+       ((w.epilogue == LinearEpilogue::None ||                 // H13: plain at two to four lanes
+         w.epilogue == LinearEpilogue::GateUp) && w.rows > 8)) &&  // H14: two-pass gate/up
+      w.matrix.inputSize % kSplitInputBlock == 0 &&
       (w.rows != 8 || w.matrix.inputSize / kQuantGroup <= 272);
 }
 bool oneLaneTile(LinearTile tile) noexcept {
@@ -315,7 +318,21 @@ LinearPlan::LinearPlan(LinearWorkload w, LinearConfig config, FloatOutput destin
             "decode_linear_q4_n32_split4_sums_residual_m24", "decode_linear_q4_n32_split4_sums_residual_m32"};
         static constexpr std::array eight{"decode_linear_q4_n32_split4_sums_residual_m16_sg8",
             "decode_linear_q4_n32_split4_sums_residual_m24_sg8", "decode_linear_q4_n32_split4_sums_residual_m32_sg8"};
-        pipeline_ = config.simdgroups == LinearSimdgroups::Four ? four[lane - 1] : eight[lane - 1];
+        static constexpr std::array fourPlain{"decode_linear_q4_n32_split4_sums_m16",
+            "decode_linear_q4_n32_split4_sums_m24", "decode_linear_q4_n32_split4_sums_m32"};
+        static constexpr std::array eightPlain{"decode_linear_q4_n32_split4_sums_m16_sg8",
+            "decode_linear_q4_n32_split4_sums_m24_sg8", "decode_linear_q4_n32_split4_sums_m32_sg8"};
+        static constexpr std::array fourSilu{"decode_linear_q4_n32_split4_sums_up_silu_m16",
+            "decode_linear_q4_n32_split4_sums_up_silu_m24", "decode_linear_q4_n32_split4_sums_up_silu_m32"};
+        static constexpr std::array eightSilu{"decode_linear_q4_n32_split4_sums_up_silu_m16_sg8",
+            "decode_linear_q4_n32_split4_sums_up_silu_m24_sg8", "decode_linear_q4_n32_split4_sums_up_silu_m32_sg8"};
+        const bool isFour = config.simdgroups == LinearSimdgroups::Four;
+        pipeline_ = residual ? (isFour ? four[lane - 1] : eight[lane - 1])
+                             : (isFour ? fourPlain[lane - 1] : eightPlain[lane - 1]);
+        // Gate/up runs the plain kernel into the gate scratch, then the up pass
+        // multiplies by SiLU of it; both read one row-sums pass.
+        if (w.epilogue == LinearEpilogue::GateUp)
+          secondPipeline_ = isFour ? fourSilu[lane - 1] : eightSilu[lane - 1];
         return;
       }
       pipeline_ = config.splits == 8 ? "decode_linear_q4_n32_split8_sums_residual"
@@ -740,9 +757,25 @@ PreparedInput Linear::add(metal::CommandGraph &graph, LinearBuffers b,
       graph.add("decode_linear_q4_row_sums", {b.input, b.scratch.sums}, Q4Params{n, k, 0}, {k / kQuantGroup, 1, 1},
                 {w.rows * 32, 1, 1});
     const uint32_t groups = selected.configuration().groups;
-    graph.add(std::string(selected.pipeline()),
-              {b.input, weights.weights, weights.scales, weights.biases, b.residual, b.output, b.scratch.sums},
-              Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
+    if (w.epilogue == LinearEpilogue::GateUp) {
+      const AffineWeights &g = gate->affine();
+      graph.add(std::string(selected.pipeline()),
+                {b.input, g.weights, g.scales, g.biases, b.gateScratch, b.scratch.sums},
+                Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
+      graph.add(std::string(selected.secondPipeline()),
+                {b.input, weights.weights, weights.scales, weights.biases, b.gateScratch, b.output, b.scratch.sums},
+                Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
+      if (stats) account(*stats, w.rows / SPLASH_TARGET_VERIFY_ROWS, 2);
+      return b.prepared;
+    }
+    if (w.epilogue == LinearEpilogue::Residual)
+      graph.add(std::string(selected.pipeline()),
+                {b.input, weights.weights, weights.scales, weights.biases, b.residual, b.output, b.scratch.sums},
+                Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
+    else
+      graph.add(std::string(selected.pipeline()),
+                {b.input, weights.weights, weights.scales, weights.biases, b.output, b.scratch.sums},
+                Q4Params{n, k, groups}, {groups, 1, 1}, {selected.threadsPerThreadgroup(), 1, 1});
     if (stats) account(*stats, w.rows / SPLASH_TARGET_VERIFY_ROWS, 1);
     return b.prepared;
   }

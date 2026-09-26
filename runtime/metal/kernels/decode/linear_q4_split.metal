@@ -474,7 +474,9 @@ kernel void decode_linear_q4_row_sums(device const bfloat *input [[buffer(0)]],
   float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
   if (lane == 0) sums[g * rows + row] = sum;
 }
-template <ushort Rows, ushort Sg>
+// Residual adds the auxiliary buffer; SiluGate multiplies by SiLU of it (the
+// up pass of a two-pass gate/up, as q4_mpp_tile_batched's MultiplySiluGate).
+template <ushort Rows, ushort Sg, bool Residual = true, bool SiluGate = false>
 inline void m5_split_rows_device_sums(device bfloat *input, device uchar *weights,
                                       device bfloat *scales, device bfloat *biases,
                                       device bfloat *residual, device bfloat *output,
@@ -491,7 +493,12 @@ inline void m5_split_rows_device_sums(device bfloat *input, device uchar *weight
       float value = 0;
       for (uint part = 0; part < Parts; ++part) value += partials[part * Rows * TileN + i];
       uint index = (i / TileN) * p.output_size + tile * TileN + i % TileN;
-      value = float(bfloat(value)) + float(residual[index]);
+      value = float(bfloat(value));
+      if constexpr (SiluGate) {
+        float gate = float(residual[index]);
+        value = gate / (1.0f + fast::exp2(-1.44269504089f * gate)) * value;
+      }
+      if constexpr (Residual) value += float(residual[index]);
       output[index] = bfloat(value);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -521,3 +528,55 @@ M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m16_sg8, 16, 2)
 M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m24_sg8, 24, 2)
 M5_SPLIT_ROWS_SUMS(decode_linear_q4_n32_split4_sums_residual_m32_sg8, 32, 2)
 #undef M5_SPLIT_ROWS_SUMS
+// H13: plain (no residual) forms. Buffers: input, weights, scales, biases,
+// output, row_sums, params.
+#define M5_SPLIT_ROWS_SUMS_PLAIN(Name, Rows, Sg)                               \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *output [[buffer(4)]],                        \
+                   device const float *row_sums [[buffer(5)]],                 \
+                   constant Q4Params &params [[buffer(6)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float partials[4 * Rows * 32];                                 \
+    m5_split_rows_device_sums<Rows, Sg, false>(input, weights, scales, biases, \
+                                               output, output, row_sums,       \
+                                               params, group, lane, simd,      \
+                                               partials);                      \
+  }
+M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m16, 16, 1)
+M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m24, 24, 1)
+M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m32, 32, 1)
+M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m16_sg8, 16, 2)
+M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m24_sg8, 24, 2)
+M5_SPLIT_ROWS_SUMS_PLAIN(decode_linear_q4_n32_split4_sums_m32_sg8, 32, 2)
+#undef M5_SPLIT_ROWS_SUMS_PLAIN
+// H14: the up pass of a two-pass gate/up. Buffers: input, weights, scales,
+// biases, gate, output, row_sums, params.
+#define M5_SPLIT_ROWS_SUMS_UP_SILU(Name, Rows, Sg)                             \
+  kernel void Name(device bfloat *input [[buffer(0)]],                         \
+                   device uchar *weights [[buffer(1)]],                        \
+                   device bfloat *scales [[buffer(2)]],                        \
+                   device bfloat *biases [[buffer(3)]],                        \
+                   device bfloat *gate [[buffer(4)]],                          \
+                   device bfloat *output [[buffer(5)]],                        \
+                   device const float *row_sums [[buffer(6)]],                 \
+                   constant Q4Params &params [[buffer(7)]],                    \
+                   uint group [[threadgroup_position_in_grid]],                \
+                   uint lane [[thread_index_in_simdgroup]],                    \
+                   uint simd [[simdgroup_index_in_threadgroup]]) {             \
+    threadgroup float partials[4 * Rows * 32];                                 \
+    m5_split_rows_device_sums<Rows, Sg, false, true>(                          \
+        input, weights, scales, biases, gate, output, row_sums, params,        \
+        group, lane, simd, partials);                                          \
+  }
+M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m16, 16, 1)
+M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m24, 24, 1)
+M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m32, 32, 1)
+M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m16_sg8, 16, 2)
+M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m24_sg8, 24, 2)
+M5_SPLIT_ROWS_SUMS_UP_SILU(decode_linear_q4_n32_split4_sums_up_silu_m32_sg8, 32, 2)
+#undef M5_SPLIT_ROWS_SUMS_UP_SILU

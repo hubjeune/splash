@@ -51,6 +51,7 @@ const std::vector<Shape> kShapes = {
     {"gdn_in", 16640, 5120, LinearEpilogue::None},       // GDN in-projection (48)
     {"attn_qkv", 14336, 5120, LinearEpilogue::None},     // attention q/k/v (16)
     {"gate_up", 17408, 5120, LinearEpilogue::GateUp},    // FFN gate+up (64)
+    {"ffn_gate", 17408, 5120, LinearEpilogue::None},    // FFN gate alone (B3/B4 split gate/up)
 };
 
 std::string tileName(LinearTile t) {
