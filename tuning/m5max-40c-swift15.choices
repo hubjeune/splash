@@ -1,0 +1,19 @@
+# Linear kernel choices measured by tune-kernels on an Apple M5 Max (40-core GPU,
+# Apple10) with Swift-1.5 (Qwen3.8-27B layout), 2026-09-25, on Splash 1.0.2.
+# Whole-graph confirm: decode B1 48.3 -> 39.4 ms; end to end +20% single-stream.
+# Load with SPLASH_KERNEL_CHOICES=<this file>.
+#
+# out   in     rows phase   epilogue  tile     groups simdgroups
+256     5120   8    decode  none      split64  4      8
+5120    4096   8    decode  none      split32  160    4
+5120    6144   8    decode  residual  split32  160    4
+5120    17408  8    decode  none      split32  160    4
+5120    17408  8    decode  residual  split32  160    4
+5120    25600  8    decode  none      split32  160    4
+6144    5120   8    decode  none      split64  96     8
+6144    5120   24   decode  none      n256     24     8
+6144    5120   256  prefill none      n256     0      8
+14336   5120   8    decode  none      split64  224    8
+14336   5120   32   decode  none      n256     56     8
+16640   5120   8    decode  none      n128     130    8
+16640   5120   32   decode  none      n256     65     8
