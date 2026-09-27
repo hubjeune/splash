@@ -103,6 +103,7 @@ against stock:
 |---|---:|---:|---:|---:|
 | Greedy, 512 tokens | 98.8 **+26%** | 163.9 **+23%** | 170.8 **+24%** | 209.7 **+15%** |
 | Sampled, 512 tokens | 90.5 **+23%** | 151.3 **+28%** | 171.2 **+37%** | 208.6 **+28%** |
+| **64K-token document, summarise, steady state** | 73.4 **+12%** | 118.2 **+24%** | | |
 | **Long reasoning, steady state, sampled** | 177.7 **+35%** | 292.0 **+31%** | 329.5 **+48%** | 391.8 **+31%** |
 | Energy per token, J (stock → fork) | 0.65 → 0.36 | 0.24 → 0.30 | 0.25 → 0.22 | 0.21 → 0.19 |
 
@@ -155,7 +156,6 @@ engines are deterministic run to run.
 | Qwen3.6-35B-A3B (tuning) | Not tuned. The fork's attention change is disabled for its shape, where it was 3% slower. |
 | Time to first token, 2K / 32K | Tie (+0.7% / −0.2%). The 2K run was too noisy for Inco's rule to pass it. |
 | Qwen3.6-35B-A3B, long reasoning, 1–4 requests | Tie: −2% / −1% / −4% / +2%, inside its 5–7% run spread. |
-| 64K context | Not yet measured reliably. The first design let prompt fills and early stops into the window. |
 
 ## What worked
 
@@ -204,8 +204,8 @@ The full log, with numbers, is in [FORK.md](../../FORK.md).
    `dev/m5/accept_hist.py`) show 50–62% of steps accepting every drafted token. A shorter
    draft loses more tokens than a shorter verify saves. ninfer-ext's gain from K=5 on CUDA
    does not transfer here.
-3. **64K-context comparison, done properly.** Use fixed-length outputs and keep prompt fills
-   out of the timing window.
+3. **Long context beyond 64K.** At 64K the fork holds its lead (+12% / +24% at 1 / 2
+   requests). The absolute slowdown with context is attention (idea 1).
 4. **DFlash draft fine-tuned on Swift.** Swift runs Inco's base-model draft. On maths
    reasoning that draft already accepts as well on Swift as on the base model (~6.3 tokens
    per step). The open question is Swift's everyday prose and code, where a draft trained on

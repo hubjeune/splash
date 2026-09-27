@@ -29,11 +29,16 @@ PROBLEMS = [
 KEY = open(os.path.expanduser("~/.splash/api-key")).read().strip()
 
 
-def stream(port, model, lane, max_tokens, reasoning, prefix=""):
+DOCUMENT_TASK = ("Summarise the document above section by section in detail, then write a thorough critique "
+                 "of its structure and accuracy. Be exhaustive.")
+
+
+def stream(port, model, lane, max_tokens, reasoning, prefix="", task="problems"):
     body = {"model": model, "stream": True, "stream_options": {"include_usage": True},
             "max_tokens": max_tokens, "temperature": 1.0, "top_p": 0.95, "top_k": 20,
             "reasoning_effort": reasoning,
-            "messages": [{"role": "user", "content": (f"Here is a document:\n\n{prefix}\n\nIgnore the document. " if prefix else "") + PROBLEMS[lane % len(PROBLEMS)]}]}
+            "messages": [{"role": "user", "content": (f"Here is a document:\n\n{prefix}\n\n" + DOCUMENT_TASK) if task == "document" else
+                          (f"Here is a document:\n\n{prefix}\n\nIgnore the document. " if prefix else "") + PROBLEMS[lane % len(PROBLEMS)]}]}
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(),
                                  {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
     chunks, usage, finish = [], None, None  # (time, characters)
@@ -88,7 +93,7 @@ class Power:
                 "gpu_temp_mean": sum(x[3] for x in s) / len(s), "gpu_temp_max": max(x[3] for x in s)}
 
 
-def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None):
+def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None, task="problems", warm=False):
     power = Power()
     time.sleep(1.0)
     start = time.perf_counter()
@@ -96,7 +101,10 @@ def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None):
         # A distinct passage per lane (about 4.2 characters per token), so lanes share no prefix.
         prefixes = [corpus[lane * int(context_tokens * 4.4):][:int(context_tokens * 4.2)] if context_tokens else ""
                     for lane in range(c)]
-        results = list(pool.map(lambda lane: stream(port, model, lane, max_tokens, reasoning, prefixes[lane]), range(c)))
+        if warm:  # fill the prefix cache first, so timing starts with every lane decoding together
+            list(pool.map(lambda lane: stream(port, model, lane, 1, reasoning, prefixes[lane], task), range(c)))
+            start = time.perf_counter()
+        results = list(pool.map(lambda lane: stream(port, model, lane, max_tokens, reasoning, prefixes[lane], task), range(c)))
     wall = time.perf_counter() - start
     time.sleep(0.5)
     power.stop()
@@ -127,6 +135,8 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=4096)
     ap.add_argument("--reasoning", default="medium")
     ap.add_argument("--round", type=int, default=1)
+    ap.add_argument("--task", choices=("problems", "document"), default="problems")
+    ap.add_argument("--warm", action="store_true", help="prefill each request once before timing")
     ap.add_argument("--context-tokens", type=int, default=0, help="long document before each prompt")
     ap.add_argument("--corpus", default=os.path.expanduser("~/Models/splash/swift-splash-project/evaluation/corpora/wiki.test.raw"))
     ap.add_argument("--out", required=True)
@@ -134,7 +144,7 @@ def main():
     corpus = open(a.corpus).read() if a.context_tokens else None
     for c in [int(x) for x in a.concurrency.split(",")]:
         row = {"label": a.label, "model": a.model, "round": a.round, "context_tokens": a.context_tokens,
-               **run(a.port, a.model, c, a.max_tokens, a.reasoning, a.context_tokens, corpus)}
+               "task": a.task, **run(a.port, a.model, c, a.max_tokens, a.reasoning, a.context_tokens, corpus, a.task, a.warm)}
         with open(a.out, "a") as f:
             f.write(json.dumps(row) + "\n")
         print(f"{a.label:6} r{a.round} C={c}: steady {row['steady_tok_s']:6.1f} tok/s (naive {row['naive_tok_s']:6.1f})"
