@@ -369,9 +369,11 @@ memory and versions. Paste it into a
 
 - **[Inco](https://github.com/incoai/splash)** built Splash, its models and its DFlash draft
   models. This fork only changes kernels and tuning.
-- **SnooPredictions515**, whose M1 port and write-up
-  ([r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/comments/1wmbbf9/splash_engine_qwen3827b_in_native_8bit_at_3755/))
-  suggested the attention and quality-agreement experiments we ran.
+- **u/Erp4759**, whose M1 port of Splash and its write-up
+  ([Splash on M1, part 2](https://www.reddit.com/r/LocalLLM/comments/1wqngu9/splash_on_m1_part_2_35ba3b_at_144_toks_on_a_2021/))
+  suggested the attention, energy-per-token and token-agreement experiments we ran.
+- **u/SnooPredictions515**, for running Splash's Qwen3.8-27B in native 8-bit
+  ([r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/comments/1wmbbf9/splash_engine_qwen3827b_in_native_8bit_at_3755/)).
 - **[giveen/ninfer-ext](https://github.com/giveen/ninfer-ext)** for the reporting layout this
   write-up follows: method first, and losses next to wins.
 - **[ashhart/TensorFold](https://github.com/ashhart/TensorFold)** for its benchmark client and a
