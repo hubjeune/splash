@@ -81,7 +81,7 @@ def stream_request(port: int, path: str, body: dict) -> tuple[int, str, bytes]:
 
 
 class RealServer:
-    def __init__(self, arguments, environment: dict | None = None):
+    def __init__(self, arguments, environment: dict | None = None, power: int = 100):
         """A server of arguments.package, its process started with these
         variables added to this process's environment."""
         package = arguments.package.resolve()
@@ -113,6 +113,8 @@ class RealServer:
         if arguments.max_cache_disk is not None:
             command.extend(("--max-cache-disk", arguments.max_cache_disk))
         command.extend(("--kv-format", arguments.kv_format))
+        if power != 100:
+            command.extend(("--power", str(power)))
         self.process = subprocess.Popen(
             command,
             cwd=ROOT,

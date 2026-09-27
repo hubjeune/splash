@@ -64,13 +64,6 @@ class Scheduler final {
 public:
   void submit(RequestSpec request);
   void observePrefill(uint32_t rows, double wallMilliseconds);
-  // A throttled engine bounds each prefill command's measured work near this
-  // target so the duty-cycle sleep lands inside a long prompt instead of only
-  // after it. Zero (the default, unthrottled) keeps whole prompt budgets and
-  // leaves decode planning untouched.
-  void setThrottledPrefillWorkMilliseconds(double milliseconds) noexcept {
-    throttledPrefillWorkMilliseconds_ = milliseconds;
-  }
   void deferAdmission(uint64_t requestId);
   void waitForResources(uint64_t requestId);
   void waitForPrefix(uint64_t requestId);
@@ -143,8 +136,6 @@ private:
   uint64_t order_ = 0;
   uint64_t decodeDispatchOrder_ = 0;
   double prefillMillisecondsPerToken_ = 0.0;
-  // Zero while unthrottled: prefill commands keep the whole row budget.
-  double throttledPrefillWorkMilliseconds_ = 0.0;
   std::optional<WorkKind> lastCommittedKind_;
   SchedulerSnapshot counters_;
 };
