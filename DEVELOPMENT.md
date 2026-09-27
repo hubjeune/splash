@@ -794,12 +794,14 @@ keeps its own sampling policy and RNG. Pure greedy batches retain their argmax
 path. Constrained requests use a separate batch for the host mask exchange.
 
 Long prefill uses disposable rolling checkpoints every 4096 tokens. Contended
-prefill adapts toward a 500 ms slice, keeping 2048-token chunks for long unopposed
-work. These policies do not extend client deadlines. Memory recovery waits are
-bounded: after a suspension, new work waits for resident requests only while
-memory is still short, and at most for the 30 s resource wait; suspended
-requests then resume first, each within its own resource wait. Readiness does
-not guarantee that a request-sized allocation fits.
+prefill adapts toward a 500 ms slice, keeping 2048-token chunks for long
+unopposed work; `--power` below 100 applies the same slice to unopposed work
+([GPU power](#gpu-power)). These policies do not extend client deadlines.
+Memory recovery waits are bounded: after a suspension, new work waits for
+resident requests only while memory is still short, and at most for the 30 s
+resource wait; suspended requests then resume first, each within its own
+resource wait. Readiness does not guarantee that a request-sized allocation
+fits.
 
 ### Disk cache
 

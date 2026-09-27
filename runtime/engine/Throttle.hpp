@@ -68,9 +68,9 @@ inline constexpr uint32_t kThrottledPrefillStartupRows = 128;
 }
 
 // DwarfStar4 smooths separate work streams (its layers and decoded tokens)
-// rather than one average. A prefill command is orders of magnitude longer
-// than a decode one, and one shared average would spend a decode's whole
-// budget on the prefill's interval; Splash keeps one average per work kind.
+// rather than one average. A prefill command is far longer than a decode one,
+// and one shared average would spend a decode's whole budget on the prefill's
+// interval; Splash keeps one average per work kind.
 enum class ThrottleWorkKind : uint8_t { Prefill, Decode };
 
 // The sleep owed after a smoothed work interval at this duty cycle. Zero for
