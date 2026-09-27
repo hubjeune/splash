@@ -292,8 +292,6 @@ engines are deterministic run to run.
 
 ## What did not
 
-The full log, with numbers, is in [FORK.md](FORK.md).
-
 | Idea | Result | Why |
 |---|---|---|
 | Epilogue redesigns (bias matmul, early loads, shuffles, cache) | No gain | The 32-row matmul is compute-bound at ~57 TFLOPS. |
@@ -345,8 +343,7 @@ The full log, with numbers, is in [FORK.md](FORK.md).
 
 ## Benchmarks and tuning
 
-Every number above can be re-measured with the tools in [dev/m5/](dev/m5/). The full log of
-hypotheses, measurements and dead ends is in [FORK.md](FORK.md).
+Every number above can be re-measured with the tools in [dev/m5/](dev/m5/).
 
 | Tool | What it measures |
 |---|---|
@@ -419,5 +416,5 @@ target's own top-k logits at scale, which needs rented GPUs:
 ## License
 
 Apache 2.0, as Splash ([LICENSE](LICENSE), [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)). Splish's
-changes are marked `splash-m5` in the source and logged in [FORK.md](FORK.md). Splash is Inco's;
+changes are marked `splash-m5` in the source. Splash is Inco's;
 Splish is an independent fork, and Inco does not endorse or support it.
