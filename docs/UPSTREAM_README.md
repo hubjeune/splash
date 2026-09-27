@@ -1,16 +1,5 @@
-# Splish
-
-> **An unofficial fork of [Inco's Splash](https://github.com/incoai/splash), tuned for Apple
-> M5 GPUs. Not affiliated with Inco.** On a 40-core M5 Max it serves Qwen3.8-27B-family models
-> 31–48% faster than stock on long reasoning, Qwen3.6-35B-A3B 18–22% faster at 2–4 requests,
-> and whole-file code edits 24–42% faster with a copy rule. Quality is unchanged.
->
-> **[Results, method, what did not work, and how to run it →](docs/m5/README.md)**
->
-> Everything below is upstream Splash's own README, unchanged. Its Homebrew install gives you
-> Inco's Splash, not Splish; build Splish from source ([quick start](docs/m5/README.md#quick-start)).
-
----
+<!-- Upstream Splash's README (Inco), kept unchanged for reference. Splish's own page is the
+repository README. Relative links below were written for the repository root. -->
 
 # Splash
 
