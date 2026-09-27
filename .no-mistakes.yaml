@@ -1,0 +1,8 @@
+# commands.lint is intentionally omitted: the repository documents no standalone
+# lint/format target, and `make check` already runs the ruff check/format checks.
+commands:
+  test: make check
+
+# This fork intentionally has no CI: its delivery pipeline must not wait for
+# checks that never register.
+no_ci: true
