@@ -1,4 +1,5 @@
 #include "engine/Scheduler.hpp"
+#include "engine/Throttle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -572,6 +573,61 @@ void testMeasuredBudgetPreservesPriorityAndStateBoundaries() {
           "adaptive prefill lost a state boundary or exceeded its shared budget");
 }
 
+void testThrottledPrefillSlicesLongPrompts() {
+  engine::Scheduler scheduler;
+  scheduler.setThrottledPrefillWorkMilliseconds(100.0);
+  scheduler.submit(request(1, 4096));
+  scheduler.resourcesReady(1, 0);
+  // The first command uses the startup cap until a timing sample exists.
+  BatchPlan plan = *scheduler.next();
+  require(plan.kind == WorkKind::Prefill && plan.items.size() == 1 &&
+              plan.items[0].promptOffset == 0 &&
+              plan.items[0].tokenCount == kThrottledPrefillStartupRows,
+          "throttled prefill did not start with the bounded startup slice");
+  completePrefill(scheduler, plan, 64.0);
+  // 0.5 ms/row now targets 200 rows per command, not the whole prompt.
+  uint32_t processed = kThrottledPrefillStartupRows;
+  uint32_t commands = 1;
+  while (scheduler.phase(1) == engine::Phase::Prefill) {
+    plan = *scheduler.next();
+    require(plan.kind == WorkKind::Prefill && plan.items.size() == 1 &&
+                plan.items[0].promptOffset == processed &&
+                plan.items[0].tokenCount <= 200,
+            "throttled prefill command exceeded its work target or lost its offset");
+    processed += plan.items[0].tokenCount;
+    ++commands;
+    completePrefill(scheduler, plan, 0.5 * plan.items[0].tokenCount);
+  }
+  require(processed == 4096 && commands > 10,
+          "throttled prefill did not slice the whole prompt");
+  require(scheduler.phase(1) == engine::Phase::Decode,
+          "throttled prefill did not finish the prompt");
+}
+
+void testThrottledPrefillPreservesStateBoundary() {
+  engine::Scheduler scheduler;
+  scheduler.observePrefill(2048, 1024.0);
+  scheduler.setThrottledPrefillWorkMilliseconds(100.0);
+  scheduler.submit(request(1, 4096));
+  scheduler.resourcesReady(1, 0);
+  scheduler.setPrefillBoundary(1, 250);
+  const BatchPlan first = *scheduler.next();
+  require(first.items.size() == 1 && first.items[0].tokenCount == 200,
+          "throttled prefill ignored its work target");
+  completePrefill(scheduler, first, 100.0);
+  // The boundary still ends the command exactly, then throttling resumes.
+  const BatchPlan boundary = *scheduler.next();
+  require(boundary.items.size() == 1 &&
+              boundary.items[0].promptOffset == 200 &&
+              boundary.items[0].tokenCount == 50,
+          "throttled prefill overran a materialization boundary");
+  completePrefill(scheduler, boundary, 25.0);
+  const BatchPlan resumed = *scheduler.next();
+  require(resumed.items.size() == 1 && resumed.items[0].promptOffset == 250 &&
+              resumed.items[0].tokenCount == 200,
+          "throttled prefill did not resume after its boundary");
+}
+
 void testUnavailableTimingAndMinimumBudget() {
   for (double wallMilliseconds :
        {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
@@ -949,6 +1005,8 @@ int main() {
     testAuxiliaryWorkDoesNotTrainTextPrefillTiming();
     testMeasuredBudgetUsesActualRowsAndRecovers();
     testMeasuredBudgetPreservesPriorityAndStateBoundaries();
+    testThrottledPrefillSlicesLongPrompts();
+    testThrottledPrefillPreservesStateBoundary();
     testUnavailableTimingAndMinimumBudget();
     testMeasuredBudgetDoesNotCountBlockedPeers();
     testMeasuredBudgetPreservesPurePrefillPacking();

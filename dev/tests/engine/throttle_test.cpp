@@ -133,6 +133,36 @@ void testAverageSmoothsLikeDwarfStar4() {
           "a prefill interval moved the decode average");
 }
 
+void testThrottledPrefillRowLimit() {
+  // Without a measured per-row interval, a throttled command takes the
+  // conservative startup cap so a long prompt already crosses a boundary.
+  for (double unusable :
+       {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity()}) {
+    require(throttledPrefillRowLimit(unusable,
+                                     kThrottledPrefillWorkMilliseconds) ==
+                kThrottledPrefillStartupRows,
+            "an unusable prefill timing lost the startup row cap");
+  }
+  // A measured interval scales the cap to the work target, and the scheduler
+  // clamps it to the prompt budget.
+  require(throttledPrefillRowLimit(0.5, 100.0) == 200,
+          "a throttled prefill command did not follow the work target");
+  require(throttledPrefillRowLimit(2.0, 100.0) == 50,
+          "a slower prefill command kept too many rows");
+  require(throttledPrefillRowLimit(1000.0, 100.0) == 1,
+          "an extreme prefill interval produced an empty command");
+  require(throttledPrefillRowLimit(1e-9, 100.0) ==
+              std::numeric_limits<uint32_t>::max(),
+          "a tiny prefill interval overflowed the row cap");
+  // Unusable targets compose the startup cap rather than a broken command.
+  require(throttledPrefillRowLimit(0.5, 0.0) == kThrottledPrefillStartupRows &&
+              throttledPrefillRowLimit(
+                  0.5, std::numeric_limits<double>::quiet_NaN()) ==
+                  kThrottledPrefillStartupRows,
+          "an unusable work target composed a prefill row cap");
+}
+
 void testStopRequestCutsTheSleepShort() {
   for (const bool stoppedAtEntry : {true, false}) {
     // A 100 ms interval at power 1 owes 9.9 s. The stop request is honored
@@ -162,6 +192,7 @@ int main() {
     testUnthrottledIsANoOp();
     testSleepMatchesTheDutyCycle();
     testAverageSmoothsLikeDwarfStar4();
+    testThrottledPrefillRowLimit();
     testStopRequestCutsTheSleepShort();
     std::cout << "power throttle tests passed\n";
     return EXIT_SUCCESS;
