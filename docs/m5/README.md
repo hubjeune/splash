@@ -121,6 +121,19 @@ Swift-1.5 on the same long-reasoning load: 140.5 / 224.2 / 224.1 / 287.7 → **1
 341.5 / 400.2** tok/s (+27% / +32% / +52% / +39%). Energy at 4 requests is 0.32 → 0.18 J per
 token.
 
+**TensorFold's client** (`tools/bench_openai.py` from
+[ashhart/TensorFold](https://github.com/ashhart/TensorFold), via `dev/m5/tensorfold_bench.py`;
+64-token replies, 5 seeds, 2 rounds). Code and chat, sampled and greedy, tok/s:
+
+| | Code, sampled | Chat, sampled | Code, greedy | Chat, greedy |
+|---|---:|---:|---:|---:|
+| Stock Splash 1.1.0 | 156.6 | 77.8 | 142.1 | 75.1 |
+| **splash-m5** | **202.6** | **88.6** | **176.1** | **91.9** |
+| TensorFold 0.3.4, as published for an M5 Max | 168.4 | 69.3 | 154.7 | 73.5 |
+
+The TensorFold row is its own published measurement: a different checkpoint and drafter, a
+raw-completion code prompt, and a different session. Treat it as a reference point, not a race.
+
 **Splash's own harness** (`http_regression.py`, ABBA, Inco's pass rule) on Inco's 27B: decode
 **5.93 → 4.60 ms per token (−22%), pass**. Time to first token is identical at 32K
 (39.5 s vs 39.4 s). At 2K it is +0.7%, but that run's spread was 6.9%, above the rule's 5%
@@ -237,6 +250,9 @@ python3 dev/m5/charts.py                          # the charts in docs/m5/charts
   suggested the attention and quality-agreement experiments we ran.
 - **[giveen/ninfer-ext](https://github.com/giveen/ninfer-ext)** for the reporting layout this
   write-up follows: method first, and losses next to wins.
+- **[ashhart/TensorFold](https://github.com/ashhart/TensorFold)** for its benchmark client and a
+  detailed recipe for the same model on the same chip. Its draft trees, copy rule and draft
+  vocabulary are on our list, and its negative results saved us time.
 
 ## Support
 
