@@ -12,6 +12,13 @@ affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **
 GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB, MacBook Pro), macOS 27.0,
 Xcode 27.0 (Metal toolchain 27A266a).
 
+**Why a fork.** Most of Splish's changes are tuned for one chip and OS: a 40-core M5 Max on
+macOS 27. An independent run on the same chip under macOS 26.6 already ranks some kernels
+differently. Rather than ask Inco to review and maintain hardware-specific work that may not
+carry over to other Macs, and to divert attention from the engine as a whole, it lives here. The
+hardware-neutral pieces (loading kernel choices from a file, the copy rule, the benchmark tools)
+are available upstream if Inco wants them.
+
 **Against Splash 1.1.0 as shipped**, on the same Mac with the same models. Each cell is decode
 tok/s, stock → Splish (gain); at 2–4 requests it is the total across requests. Models are 4-bit
 affine (MLX-style, group 64, the Splash package format) unless marked GGUF, with Splash's default
