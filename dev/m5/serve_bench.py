@@ -138,9 +138,12 @@ def main():
     ap.add_argument("--task", choices=("problems", "document"), default="problems")
     ap.add_argument("--warm", action="store_true", help="prefill each request once before timing")
     ap.add_argument("--context-tokens", type=int, default=0, help="long document before each prompt")
-    ap.add_argument("--corpus", default=os.path.expanduser("~/Models/splash/swift-splash-project/evaluation/corpora/wiki.test.raw"))
+    ap.add_argument("--corpus", default=os.environ.get("SPLISH_CORPUS", ""),
+                    help="plain-text corpus for --context-tokens (e.g. WikiText-2 wiki.test.raw)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    if a.context_tokens and not a.corpus:
+        ap.error("--context-tokens needs --corpus (or SPLISH_CORPUS)")
     corpus = open(a.corpus).read() if a.context_tokens else None
     for c in [int(x) for x in a.concurrency.split(",")]:
         row = {"label": a.label, "model": a.model, "round": a.round, "context_tokens": a.context_tokens,

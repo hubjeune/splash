@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""splash-m5 write-up charts: dependency-free SVG bar charts into docs/m5/charts/.
+"""Splish (splash-m5) write-up charts: dependency-free SVG bar charts into docs/m5/charts/.
 
 The data below is copied from FORK.md (every number has its measurement there). Charts
 follow GitHub's light or dark theme through prefers-color-scheme inside the SVG.
@@ -64,25 +64,25 @@ def bars(name, title, groups, series, values, unit, fmt="{:.0f}", note=""):
 
 def main():
     # Official Qwen3.8-27B package, stock 1.1.0 vs fork (v8), greedy, 512 tokens, mean of 2 rounds.
-    bars("official-27b-concurrency", "Inco's Qwen3.8-27B: stock Splash 1.1.0 vs splash-m5 (greedy)",
-         ["1 request", "2 requests", "3 requests", "4 requests"], ["stock 1.1.0", "splash-m5"],
+    bars("official-27b-concurrency", "Inco's Qwen3.8-27B: stock Splash 1.1.0 vs Splish (greedy)",
+         ["1 request", "2 requests", "3 requests", "4 requests"], ["stock 1.1.0", "Splish"],
          [[78.2, 133.7, 137.8, 182.6], [98.8, 163.9, 170.8, 209.7]], "aggregate tok/s",
          note="512 tokens, mean of 2 rounds")
-    bars("official-27b-concurrency-sampled", "Inco's Qwen3.8-27B: stock vs splash-m5 (sampled)",
-         ["1 request", "2 requests", "3 requests", "4 requests"], ["stock 1.1.0", "splash-m5"],
+    bars("official-27b-concurrency-sampled", "Inco's Qwen3.8-27B: stock vs Splish (sampled)",
+         ["1 request", "2 requests", "3 requests", "4 requests"], ["stock 1.1.0", "Splish"],
          [[73.8, 118.2, 124.9, 163.4], [90.5, 151.3, 171.2, 208.6]], "aggregate tok/s",
          note="temperature 1.0, top_p 0.95, top_k 20")
     # Long reasoning, steady state (dev/m5/serve_bench.py, 4,096 tokens, sampled), overnight 2026-09-26.
-    bars("steady-state", "Long reasoning, steady state: stock 1.1.0 vs splash-m5",
+    bars("steady-state", "Long reasoning, steady state: stock 1.1.0 vs Splish",
          ["27B, 1", "27B, 2", "27B, 3", "27B, 4", "Swift, 1", "Swift, 2", "Swift, 3", "Swift, 4"],
-         ["stock 1.1.0", "splash-m5"],
+         ["stock 1.1.0", "Splish"],
          [[131.3, 223.2, 222.2, 299.0, 140.5, 224.2, 224.1, 287.7],
           [177.7, 292.0, 329.5, 391.8, 179.0, 295.8, 341.5, 400.2]], "aggregate tok/s",
          note="model, concurrent requests; mean of 2 rounds")
     # Swift-1.5 decode step (decode-profile, 2,048-token prompt): stock 1.0.2, tuned 1.0.2, splash-m5 v8.
     bars("swift-step-time", "Swift-1.5 decode step time (lower is better)",
          ["1 request", "2 requests", "3 requests", "4 requests"],
-         ["stock 1.0.2", "1.0.2 + tuned choices", "splash-m5 (v8)"],
+         ["stock 1.0.2", "1.0.2 + tuned choices", "Splish (v8)"],
          [[49.0, 59.1, 87.2, 87.0], [41.5, 59.4, 88.2, 85.8], [40.5, 44.9, 59.3, 62.9]], "ms per step",
          fmt="{:.1f}", note="decode-profile, 2,048-token prompt")
     # Verify attention probes, Swift 27B, 131K history, 4 lanes (attention-sweep).

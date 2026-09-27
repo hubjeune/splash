@@ -9,7 +9,7 @@
     .s0{fill:#6e7681} .s1{fill:#4493f8} .s2{fill:#3fb950} .s3{fill:#d29922}}
 </style>
 <rect class="bg" width="760" height="380" rx="8"/>
-<text class="t" x="60" y="28">Long reasoning, steady state: stock 1.1.0 vs splash-m5</text>
+<text class="t" x="60" y="28">Long reasoning, steady state: stock 1.1.0 vs Splish</text>
 <line class="g" x1="60" x2="740" y1="310.0" y2="310.0"/>
 <text class="l" x="52" y="314.0" text-anchor="end">0</text>
 <line class="g" x1="60" x2="740" y1="246.5" y2="246.5"/>
@@ -64,6 +64,6 @@
 <rect class="s0" x="60" y="350" width="12" height="12" rx="2"/>
 <text class="l" x="78" y="360">stock 1.1.0</text>
 <rect class="s1" x="167" y="350" width="12" height="12" rx="2"/>
-<text class="l" x="185" y="360">splash-m5</text>
+<text class="l" x="185" y="360">Splish</text>
 <text class="l" x="740" y="360" text-anchor="end">model, concurrent requests; mean of 2 rounds</text>
 </svg>

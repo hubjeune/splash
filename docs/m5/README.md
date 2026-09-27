@@ -1,9 +1,9 @@
-<!-- splash-m5 public write-up. DRAFT: private until the fork goes public. At go-live,
-     link this from the top of the repository README. -->
+<!-- Splish public write-up (the fork was developed as splash-m5; internal names keep that). -->
 
-# splash-m5
+# Splish
 
-splash-m5 is a fork of [Inco's Splash](https://github.com/incoai/splash) that retunes and
+Splish is an **unofficial** fork of [Inco's Splash](https://github.com/incoai/splash), not
+affiliated with Inco. It retunes and
 extends its Metal kernels for Apple **M5**-family GPUs. It was developed and measured on a
 40-core **M5 Max** (128 GB).
 
@@ -14,6 +14,13 @@ What the fork adds on top of Splash 1.1.0:
   Qwen3.8-27B package it is **31–48% faster than stock** on long reasoning at 1–4 concurrent
   requests, and 15–37% on short 512-token answers. It also uses less energy per token at
   3–4 requests. Quality is unchanged at 95/95.
+- **Qwen3.6-35B-A3B tuned.** The same kernels, with choices from Splash's own tuner, serve
+  Inco's 35B **18–22% faster at 2–4 requests** (+5% at one). Quality 95/95.
+- **A copy rule for coding agents** (from [TensorFold](https://github.com/ashhart/TensorFold)).
+  When the last 16+ tokens repeat earlier context, the next draft is the verbatim
+  continuation. Whole-file edits run **24–42% faster**; everything else is within ±3%. Output
+  is exact: greedy text is byte-identical, and sampled acceptance uses a one-hot draft
+  distribution.
 - **Kernel choices from a file** (`SPLASH_KERNEL_CHOICES`), so a device can be retuned without
   a rebuild. The same mechanism covers GGUF (block-quantized) decode.
 - **Tools that keep the numbers honest.** They include a kernel bench checked against fp64, a
@@ -47,7 +54,7 @@ Apple GPUs run, but the choices files are tuned for a 40-core M5 Max. The server
 Python 3 with `install/requirements.txt`; Homebrew Splash's own environment works.
 
 ```sh
-git clone <this repository> splash-m5 && cd splash-m5 && make
+git clone https://github.com/publicExcess/splish && cd splish && make
 PKG=~/.cache/huggingface/hub/models--incoai--Qwen3.8-27B-Splash/snapshots/<revision>
 SPLASH_KERNEL_CHOICES=tuning/m5max-40c-swift15-v8.choices \
   python3 server/server.py $PKG/target $PKG/draft --tokenizer $PKG/tokenizer \
@@ -63,7 +70,11 @@ same OpenAI-compatible API as Splash.
 |---|---|---|
 | Qwen3.8-27B family, Splash package (Inco's, Swift-1.5, other fine-tunes) | `tuning/m5max-40c-swift15-v8.choices` | Tuned on a 40-core M5 Max. Other M5 chips: run the tuner (`dev/tuning`). |
 | Qwen3.8-27B GGUF Q8_0 | `tuning/m5max-40c-swift15-q80.choices` | ~2% |
-| Qwen3.6-35B-A3B | none | The fork adds nothing measurable here. |
+| Qwen3.6-35B-A3B | `tuning/m5max-40c-qwen36-35b.choices` | +5/+18/+22/+18% at 1–4 requests |
+| Qwen3.8-27B GGUF Q4_K_M, Q6_K | `tuning/m5max-40c-swift15-kquant.choices` | ~2% (the G4a kernel does the work) |
+
+**Copy rule:** set `SPLASH_M5_COPY_MIN_MATCH=16` (0 or unset: off). It pays off on agents that
+rewrite files. It never triggers on prose and costs at most ~3% when it misfires.
 
 Draft length: keep Splash's 7 drafted tokens. On the long-reasoning load 50–62% of verify
 steps accept all 7 (45–48% on Qwen3.6-35B). A draft cut to 5 keeps only ~81% of the tokens
@@ -94,7 +105,7 @@ behaviour. For long agent sessions, set a fan curve that reaches full speed by 8
 the current build, G4a and A4 included. The 512-token rows and Swift's step times predate
 G4a and A4. Both changes are bit-identical and affect GGUF models and long context only.
 
-### Where splash-m5 leads
+### Where Splish leads
 
 Inco's Qwen3.8-27B package (`incoai/Qwen3.8-27B-Splash`), aggregate tok/s, fork and change
 against stock:
@@ -109,8 +120,8 @@ against stock:
 
 ![Long reasoning, steady state](charts/steady-state.svg)
 
-![Inco's Qwen3.8-27B, stock vs splash-m5, greedy](charts/official-27b-concurrency.svg)
-![Inco's Qwen3.8-27B, stock vs splash-m5, sampled](charts/official-27b-concurrency-sampled.svg)
+![Inco's Qwen3.8-27B, stock vs Splish, greedy](charts/official-27b-concurrency.svg)
+![Inco's Qwen3.8-27B, stock vs Splish, sampled](charts/official-27b-concurrency-sampled.svg)
 
 Stock for reference: greedy 78.2 / 133.7 / 137.8 / 182.6 tok/s, sampled 73.8 / 118.2 /
 124.9 / 163.4, and long reasoning 131.3 / 223.2 / 222.2 / 299.0. Long-reasoning maths drafts
@@ -128,7 +139,7 @@ token.
 | | Code, sampled | Chat, sampled | Code, greedy | Chat, greedy |
 |---|---:|---:|---:|---:|
 | Stock Splash 1.1.0 | 156.6 | 77.8 | 142.1 | 75.1 |
-| **splash-m5** | **202.6** | **88.6** | **176.1** | **91.9** |
+| **Splish** | **202.6** | **88.6** | **176.1** | **91.9** |
 | TensorFold 0.3.4, as published for an M5 Max | 168.4 | 69.3 | 154.7 | 73.5 |
 
 The TensorFold row is its own published measurement: a different checkpoint and drafter, a
@@ -144,7 +155,7 @@ Swift-1.5 (a Qwen3.8-27B fine-tune, same shapes), decode step time from Splash's
 
 ![Swift-1.5 decode step time](charts/swift-step-time.svg)
 
-| Requests | Stock 1.0.2 | 1.0.2 + tuned choices | splash-m5 (v8) |
+| Requests | Stock 1.0.2 | 1.0.2 + tuned choices | Splish (v8) |
 |---|---:|---:|---:|
 | 1 | 49.0 ms | 41.5 ms | **40.5 ms** |
 | 2 | 59.1 ms | 59.4 ms | **44.9 ms** |
@@ -185,6 +196,22 @@ engines are deterministic run to run.
    ![GGUF Q8_0 at 32 rows](charts/gguf-g4a.svg)
 5. **Attention QK on 4 simdgroups for 6-head groups (A4).** Bit-identical; attention 2–3%
    faster.
+6. **Tuning a second model with the same kernels.** Splash's `tune-kernels` on Qwen3.6-35B-A3B
+   picked 31 `SplitSums32` choices for its dense projections. They were fp64- and race-checked
+   on its shapes. Serving is +5/+18/+22/+18% at 1–4 requests.
+7. **The copy rule** (TensorFold's). Measured before it was built: a replay of real
+   transcripts (`SPLASH_M5_TOKEN_LOG`, `dev/m5/copy_rule.py`) predicted +26% / +42% on two
+   whole-file edits; live it gave +24% / +42%. The first build rejected every copy. The engine
+   emits each step's anchor token first, so the copy was one token early; a debug log
+   (`SPLASH_M5_COPY_DEBUG`) found it.
+
+   | Swift-1.5, greedy, prompts cached | off | on |
+   |---|---:|---:|
+   | Whole-file edit (type hints), tok/s | 144.4 | **179.7** |
+   | Whole-file edit (docstrings), tok/s | 136.3 | **194.2** |
+   | Short rename, tok/s | 197.8 | 196.4 |
+   | Prose / reasoning | | −0.4 to −0.7% |
+   | Steps accepting all 7 drafts | 28% | 45% |
 
 ## What did not
 
@@ -224,14 +251,17 @@ The full log, with numbers, is in [FORK.md](../../FORK.md).
    TensorFold reports that fine-tuning DFlash2 on 372K target tokens gave no gain, and that
    the limit is the drafter's candidates. The promising route is distillation from the
    target's top-k logits at scale. Cloud compute for this is what [Support](#support) is for.
-5. **Draft trees and a copy rule** (from TensorFold). Verify a small best-first tree instead of
-   one chain (+28% tokens per pass on code there), and draft verbatim copies from the context
-   when 8+ tokens match (~25% of agent rounds, 94% right). Both need DeltaNet state to branch.
+5. **Draft trees** (from TensorFold). Verify a small best-first tree instead of one chain
+   (+28% tokens per pass on code there). Our estimate is smaller: +5–15% at one request on
+   prose and chat, because Splash's chain already accepts all 7 drafts in about half of
+   steps. It is a large engine change (per-node DeltaNet state, tree attention masks), so the
+   next step is to measure it from the drafter's candidate lattice first.
 6. **Draft vocabulary** (from TensorFold). 99.64% of generated tokens have ids below 98,304, so
    the draft's head could read 40% of the vocabulary. Output is unchanged, because
    verification still reads all of it.
-7. **Batch width 8.** A plan exists (the converter project's `docs/PLAN_CONCURRENCY.md`).
-8. **Q4_K and other GGUF formats.** G4a applies to them but is only measured on Q8_0.
+7. **Batch width 8.** Splash caps concurrent decode at 4; a plan for 8 exists but is unbuilt.
+8. **Other GGUF formats.** G4a is measured on Q8_0, Q4_K and Q6_K (bit-identical, +3–14% per
+   kernel, ~2% per step); the IQ and Q2/Q3/Q5 formats are unmeasured.
 9. **Token-agreement check.** Compare next-token choices position by position against
    upstream, as the M1 port does. It is a finer quality gate than a task set.
 10. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max.

@@ -16,7 +16,8 @@
 set -u
 FORK=$HOME/Models/splash/splash-m5
 STOCK=$HOME/Models/splash/splash-1.1.0
-PROJECT=$HOME/Models/splash/swift-splash-project
+PROJECT=${PROJECT:-$HOME/Models/splash/swift-splash-project}  # the Swift package and quality bench
+export SPLISH_CORPUS=${SPLISH_CORPUS:-$PROJECT/evaluation/corpora/wiki.test.raw}  # phase E
 OUT=${OUT:-$FORK/build/m5/night-2026-09-26}
 PY=/opt/homebrew/opt/splash/libexec/python/bin/python3
 CHOICES=$FORK/tuning/m5max-40c-swift15-v8.choices

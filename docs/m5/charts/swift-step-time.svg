@@ -54,6 +54,6 @@
 <rect class="s1" x="167" y="350" width="12" height="12" rx="2"/>
 <text class="l" x="185" y="360">1.0.2 + tuned choices</text>
 <rect class="s2" x="344" y="350" width="12" height="12" rx="2"/>
-<text class="l" x="362" y="360">splash-m5 (v8)</text>
+<text class="l" x="362" y="360">Splish (v8)</text>
 <text class="l" x="740" y="360" text-anchor="end">decode-profile, 2,048-token prompt</text>
 </svg>

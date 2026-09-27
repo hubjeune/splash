@@ -19,7 +19,8 @@ decode-profile binary, and may bring their own metallib (kernel-only changes).
 import argparse, math, os, re, statistics as st, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PACKAGE = os.path.expanduser("~/Models/splash/swift-splash-project/output/swift15-splash")
+# The model package or GGUF assembly root: --package, or SPLISH_PACKAGE.
+PACKAGE = os.environ.get("SPLISH_PACKAGE", "")
 
 
 def run_profile(spec, prompt, cycles, binary, metallib, package=PACKAGE):
@@ -76,6 +77,8 @@ def main():
     ap.add_argument("--package", default=PACKAGE, help="package or GGUF assembly root")
     ap.add_argument("--metallib", default=os.path.join(ROOT, "build/splash.metallib"))
     args = ap.parse_args()
+    if not args.package:
+        sys.exit("step_bench: give --package (or set SPLISH_PACKAGE)")
     configs = [c.split("=", 1) for c in args.configs]
     results = {label: [] for label, _ in configs}
     for r in range(args.rounds):
