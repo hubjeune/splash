@@ -26,7 +26,14 @@ PROBLEMS = [
     "Three fair dice are rolled until the sum is at least 15. Find the expected number of rolls, "
     "as a reduced fraction. Reason carefully step by step.",
 ]
-KEY = open(os.path.expanduser("~/.splash/api-key")).read().strip()
+def _key():
+    if os.environ.get("SPLASH_API_KEY"):
+        return os.environ["SPLASH_API_KEY"]
+    path = os.path.expanduser("~/.splash/api-key")
+    return open(path).read().strip() if os.path.exists(path) else ""
+
+
+KEY = _key()
 
 
 DOCUMENT_TASK = ("Summarise the document above section by section in detail, then write a thorough critique "
@@ -101,8 +108,13 @@ def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None, ta
         # A distinct passage per lane (about 4.2 characters per token), so lanes share no prefix.
         prefixes = [corpus[lane * int(context_tokens * 4.4):][:int(context_tokens * 4.2)] if context_tokens else ""
                     for lane in range(c)]
+        prefill = []
         if warm:  # fill the prefix cache first, so timing starts with every lane decoding together
-            list(pool.map(lambda lane: stream(port, model, lane, 1, reasoning, prefixes[lane], task), range(c)))
+            def timed(lane):
+                t = time.perf_counter()
+                r = stream(port, model, lane, 1, reasoning, prefixes[lane], task)
+                return r["prompt_tokens"], time.perf_counter() - t
+            prefill = list(pool.map(timed, range(c)))
             start = time.perf_counter()
         results = list(pool.map(lambda lane: stream(port, model, lane, max_tokens, reasoning, prefixes[lane], task), range(c)))
     wall = time.perf_counter() - start
@@ -120,6 +132,8 @@ def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None, ta
     row = {"concurrency": c, "steady_tok_s": steady_tokens / window, "naive_tok_s": tokens / wall,
            "window_s": window, "wall_s": wall, "tokens": tokens,
            "finish": [r["finish"] for r in results], "prompt_tokens": [r["prompt_tokens"] for r in results],
+           # Cold prefill of the warm-up request (prompt tokens / its wall time), when --warm ran one.
+           "prefill_tok_s": [n / t for n, t in prefill if n] if prefill else None,
            **power.window(first, last)}
     if "package_w" in row:
         row["joules_per_token"] = row["package_w"] * window / max(steady_tokens, 1)

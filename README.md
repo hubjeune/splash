@@ -15,7 +15,7 @@ tok/s, stock → Splish (gain); at 2–4 requests it is the total across request
 | Inco's Qwen3.8-27B, short answers, sampled | 74 → **91** (+23%) | 118 → **151** (+28%) | 125 → **171** (+37%) | 163 → **209** (+28%) |
 | Inco's Qwen3.8-27B, TensorFold's client: code | 142 → **176** (+24%) | | | |
 | Inco's Qwen3.8-27B, TensorFold's client: chat | 75 → **92** (+22%) | | | |
-| Inco's Qwen3.8-27B, a 64K-token document | 65 → **73** (+12%) | 96 → **118** (+24%) | | |
+| Inco's Qwen3.8-27B, a 2K–128K-token document ([by context](#by-context-length)) | **+11% to +29%** | 96 → **118** (+24%, 64K) | | |
 | Swift-1.5 (a Qwen3.8-27B fine-tune), long reasoning | 141 → **179** (+27%) | 224 → **296** (+32%) | 224 → **342** (+52%) | 288 → **400** (+39%) |
 | Qwen3.6-35B-A3B, long reasoning | 331 → **348** (+5%) | 486 → **573** (+18%) | 553 → **672** (+22%) | 642 → **754** (+18%) |
 
@@ -23,6 +23,25 @@ On top of that, the copy rule speeds up whole-file code edits (Swift-1.5, Splish
 it): 144 → **180** tok/s (+24%) and 136 → **194** tok/s (+42%).
 
 Quality is unchanged: every model above scores 95/95 on our 95-task set with Splish, as stock did wherever we measured it.
+
+### By context length
+
+One request summarising a document of the given length (a distinct WikiText passage),
+2,048 tokens out. Prompts are prefilled into the cache before decode timing starts. Decode
+is the mean of 2 rounds; prefill is the cold first round. Inco's Qwen3.8-27B, tok/s, stock →
+Splish:
+
+| Context | 2K | 8K | 32K | 64K | 128K |
+|---|---:|---:|---:|---:|---:|
+| **Decode** | 92 → **109** (+18%) | 74 → **95** (+29%) | 72 → **80** (+11%) | 66 → **77** (+16%) | 54 → **63** (+16%) |
+| Prefill | 1,019 → 923 | 829 → 895 | 851 → 864 | 794 → 803 | 701 → 713 |
+
+Decode is faster at every length. Prefill is unchanged: Splish does not touch the prefill
+kernels, and these single cold measurements differ by −9% to +8%. Splash's own harness also
+finds time to first token even at 2K and 32K.
+
+![Decode by context length](docs/m5/charts/context-decode.svg)
+![Prefill by context length](docs/m5/charts/context-prefill.svg)
 
 What the fork adds on top of Splash 1.1.0:
 
@@ -59,51 +78,40 @@ the server. The fork tracks upstream releases deliberately (currently Splash 1.1
 - [What did not](#what-did-not)
 - [Ideas left to try](#ideas-left-to-try)
 - [Benchmarks and tuning](#benchmarks-and-tuning)
+- [Report your results](#report-your-results)
+- [Upcoming](#upcoming)
 - [Credits](#credits)
 - [License](#license)
 - [Support](#support)
 
 ## Quick start
 
-**Requirements.** An Apple silicon Mac that Splash supports (M3 or newer), macOS 26.4+, Xcode 26
-or newer with a Metal 4 toolchain, and Python 3.12–3.14. The gains need an **M5-family GPU**. The
-choices files here are tuned on a 40-core M5 Max; on other M5 chips, retune with the tuner
-(see [Benchmarks and tuning](#benchmarks-and-tuning)). Memory needs are Splash's
-([upstream README](docs/UPSTREAM_README.md#quick-start)).
-
-**Build.**
+You need an Apple silicon Mac with macOS 26.4+, Xcode 26 or newer, and Python 3.12–3.14.
 
 ```sh
-git clone https://github.com/publicExcess/splish.git
-cd splish
+git clone https://github.com/publicExcess/splish.git && cd splish
 make -j4
+./splish serve --model mlx-community/Qwen3.8-27B-4bit
 ```
 
-**Run.** `./splash serve` sets up its Python dependencies, downloads the model and its DFlash2
-draft, and prepares the weights on first use, as in upstream Splash. Point it at the choices file
-for your model:
+The first serve downloads the model and its DFlash2 draft and prepares the weights, as in
+Splash. `./splish` picks the tuned kernel choices for the model and turns on the copy rule; it
+prints what it chose. Then connect an agent (`./splish opencode`, `claude`, `codex`, `hermes`,
+`pi`) or any OpenAI- or Anthropic-compatible client, as with Splash
+([upstream README](docs/UPSTREAM_README.md)).
 
-```sh
-# Qwen3.8-27B family: Inco's package, mlx-community/Qwen3.8-27B-4bit, fine-tunes such as Swift-1.5
-SPLASH_KERNEL_CHOICES=tuning/m5max-40c-swift15-v8.choices \
-SPLASH_M5_COPY_MIN_MATCH=16 \
-  ./splash serve --model mlx-community/Qwen3.8-27B-4bit
+The tuned choices are for a **40-core M5 Max**. On any other Mac, `./splish` keeps Splash's own
+defaults and still turns on the copy rule. Other M5 chips will need their own choices; an
+auto-tuner is [upcoming](#upcoming).
 
-# Qwen3.6-35B-A3B
-SPLASH_KERNEL_CHOICES=tuning/m5max-40c-qwen36-35b.choices \
-  ./splash serve --model incoai/Qwen3.6-35B-A3B-Splash
-```
-
-The log says `Installed supplied kernel choices.` when the file loads. Everything else (the
-OpenAI- and Anthropic-compatible API, `./splash opencode|claude|codex|hermes|pi`, context and
-memory options) is upstream Splash's; see [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md) and
-[DEVELOPMENT.md](DEVELOPMENT.md).
+**Advanced.** `./splish` only sets these when you have not:
 
 | Variable | Effect |
 |---|---|
-| `SPLASH_KERNEL_CHOICES=FILE` | Load measured kernel choices ([tuning/](tuning/)); unset, Splash's defaults |
-| `SPLASH_M5_COPY_MIN_MATCH=N` | Copy rule: draft verbatim continuations of N+ repeated tokens (16 recommended; 0 or unset: off) |
-| `SPLASH_M5_ACCEPT_LOG`, `SPLASH_M5_TOKEN_LOG` | Diagnostics: acceptance histogram and per-step tokens (see below) |
+| `SPLASH_KERNEL_CHOICES=FILE` | Kernel choices to load ([tuning/](tuning/)); unset means Splash's defaults |
+| `SPLISH_CHOICES=any` | Apply the tuned choices on a chip other than a 40-core M5 Max |
+| `SPLASH_M5_COPY_MIN_MATCH=N` | Copy rule: draft verbatim continuations of N+ repeated tokens (default 16; 0 turns it off) |
+| `SPLASH_M5_ACCEPT_LOG`, `SPLASH_M5_TOKEN_LOG` | Diagnostics: acceptance histogram and per-step tokens |
 
 ## Recommended settings
 
@@ -114,8 +122,8 @@ memory options) is upstream Splash's; see [docs/UPSTREAM_README.md](docs/UPSTREA
 | Qwen3.6-35B-A3B | `tuning/m5max-40c-qwen36-35b.choices` | +5/+18/+22/+18% at 1–4 requests |
 | Qwen3.8-27B GGUF Q4_K_M, Q6_K | `tuning/m5max-40c-swift15-kquant.choices` | ~2% (the G4a kernel does the work) |
 
-**Copy rule:** set `SPLASH_M5_COPY_MIN_MATCH=16` (0 or unset: off). It pays off on agents that
-rewrite files. It never triggers on prose and costs at most ~3% when it misfires.
+**Copy rule:** on by default through `./splish` (`SPLASH_M5_COPY_MIN_MATCH=16`). It pays off on
+agents that rewrite files, never triggers on prose, and costs at most ~3% when it misfires.
 
 Draft length: keep Splash's 7 drafted tokens. On the long-reasoning load 50–62% of verify
 steps accept all 7 (45–48% on Qwen3.6-35B). A draft cut to 5 keeps only ~81% of the tokens
@@ -305,7 +313,7 @@ The full log, with numbers, is in [FORK.md](FORK.md).
    kernel, ~2% per step); the IQ and Q2/Q3/Q5 formats are unmeasured.
 9. **Token-agreement check.** Compare next-token choices position by position against
    upstream, as the M1 port does. It is a finer quality gate than a task set.
-10. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max.
+10. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max; see [Upcoming](#upcoming).
 
 ## Benchmarks and tuning
 
@@ -331,6 +339,29 @@ make && dev/m5/build.sh
 SPLISH_PACKAGE=<model root> python3 dev/m5/step_bench.py base=- new=tuning/m5max-40c-swift15-v8.choices
 python3 dev/m5/charts.py                                                # docs/m5/charts
 ```
+
+## Report your results
+
+Splish is measured on one Mac, so results from other chips, models and workloads are the most
+useful thing you can send, especially where it is slower. With Splish serving (and, for a
+comparison, stock Splash serving the same model on another port):
+
+```sh
+python3 dev/m5/report.py --port 8000 --model mlx-community/Qwen3.8-27B-4bit [--baseline-port 8001]
+```
+
+It measures 1–4 concurrent requests and prints a Markdown report with your chip, GPU cores,
+memory and versions. Paste it into a
+[performance report](https://github.com/publicExcess/splish/issues/new?template=performance-report.md).
+
+## Upcoming
+
+- **An auto-tuner** (`./splish tune --model …`, v1.1). It will run Splash's kernel tuner for your
+  chip and model, check every choice against an fp64 reference on the model's own shapes, keep
+  a choice only if the whole decode step is faster, and write a choices file that `./splish`
+  then uses. It brings the tuned gains to other M5 chips.
+- Then, from [Ideas left to try](#ideas-left-to-try): a draft-tree measurement, the attention
+  rewrite for long context, and a distilled draft model.
 
 ## Credits
 

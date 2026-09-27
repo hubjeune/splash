@@ -79,6 +79,18 @@ def main():
          [[131.3, 223.2, 222.2, 299.0, 140.5, 224.2, 224.1, 287.7],
           [177.7, 292.0, 329.5, 391.8, 179.0, 295.8, 341.5, 400.2]], "aggregate tok/s",
          note="model, concurrent requests; mean of 2 rounds")
+    # Context breakdown (serve_bench --task document --warm, one request, Inco's 27B, 2 rounds).
+    import json
+    context = os.path.join(os.path.dirname(OUT), "context.json")
+    if os.path.exists(context):
+        c = json.load(open(context))
+        labels = [f"{k // 1024}K" for k in c["contexts"]]
+        bars("context-decode", "Decode speed by context length, one request (Inco's Qwen3.8-27B)",
+             labels, ["stock 1.1.0", "Splish"], [c["decode"]["stock"], c["decode"]["splish"]],
+             "decode tok/s", note="document summary, 2,048 tokens out; mean of 2 rounds")
+        bars("context-prefill", "Prefill speed by context length (cold, one request)",
+             labels, ["stock 1.1.0", "Splish"], [c["prefill"]["stock"], c["prefill"]["splish"]],
+             "prompt tok/s", note="first round, empty prefix cache")
     # Swift-1.5 decode step (decode-profile, 2,048-token prompt): stock 1.0.2, tuned 1.0.2, splash-m5 v8.
     bars("swift-step-time", "Swift-1.5 decode step time (lower is better)",
          ["1 request", "2 requests", "3 requests", "4 requests"],
