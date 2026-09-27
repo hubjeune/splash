@@ -53,6 +53,18 @@ const std::vector<Shape> kShapes = {
     {"attn_qkv", 14336, 5120, LinearEpilogue::None},     // attention q/k/v (16)
     {"gate_up", 17408, 5120, LinearEpilogue::GateUp},    // FFN gate+up (64)
     {"ffn_gate", 17408, 5120, LinearEpilogue::None},    // FFN gate alone (B3/B4 split gate/up)
+    // Qwen3.6-35B-A3B dense projections (tuning/m5max-40c-qwen36-35b.choices)
+    {"q36_12544", 12544, 2048, LinearEpilogue::None},
+    {"q36_9216", 9216, 2048, LinearEpilogue::None},
+    {"q36_6144", 6144, 2048, LinearEpilogue::None},
+    {"q36_gate_up", 6144, 2048, LinearEpilogue::GateUp},
+    {"q36_512", 512, 2048, LinearEpilogue::None},
+    {"q36_256", 256, 2048, LinearEpilogue::None},
+    {"q36_k16384", 2048, 16384, LinearEpilogue::None},
+    {"q36_k6144", 2048, 6144, LinearEpilogue::None},
+    {"q36_k4096", 2048, 4096, LinearEpilogue::None},
+    {"q36_k4096_res", 2048, 4096, LinearEpilogue::Residual},
+    {"q36_head", 248320, 2048, LinearEpilogue::None},
     {"diag_res_k5120", 16640, 5120, LinearEpilogue::Residual},  // diagnostic only
     {"diag_plain_k17408", 5120, 17408, LinearEpilogue::None},   // diagnostic only
 };
