@@ -953,6 +953,61 @@ void Engine::publishReachedStateBoundaries(Request &active,
   armNextStateBoundary(active);
 }
 
+namespace {
+
+// splash-m5 copy rule (TensorFold's): SPLASH_M5_COPY_MIN_MATCH=N (0 or unset: off). When the
+// last N committed tokens occurred earlier in the request (prompt or output), the next
+// verify drafts the (up to) 7 tokens that followed that occurrence instead of DFlash's.
+uint32_t copyMinMatch() {
+  static const uint32_t value = [] {
+    const char *text = std::getenv("SPLASH_M5_COPY_MIN_MATCH");
+    return text && *text ? static_cast<uint32_t>(std::strtoul(text, nullptr, 10)) : 0u;
+  }();
+  return value;
+}
+
+uint64_t windowHash(const uint32_t *tokens, uint32_t count) {
+  uint64_t hash = 1469598103934665603ull;
+  for (uint32_t i = 0; i < count; ++i) {
+    hash ^= tokens[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+} // namespace
+
+void Engine::fillCopyDraft(Request &active, ModelBatchItem &item) {
+  const uint32_t window = copyMinMatch();
+  const std::vector<uint32_t> &tokens = active.exactTokens;
+  const size_t size = tokens.size();
+  if (!window || size <= window)
+    return;
+  // Index every window that ends before the current one (which ends at size).
+  for (size_t end = std::max<size_t>(active.copyIndexedEnd, window); end < size; ++end)
+    active.copyIndex[windowHash(&tokens[end - window], window)] = static_cast<uint32_t>(end);
+  active.copyIndexedEnd = size;
+  const auto found = active.copyIndex.find(windowHash(&tokens[size - window], window));
+  if (found == active.copyIndex.end())
+    return;
+  const size_t follow = found->second;
+  if (!std::equal(tokens.begin() + (follow - window), tokens.begin() + follow,
+                  tokens.begin() + (size - window)))
+    return;  // a hash collision
+  const size_t length = std::min<size_t>(item.copyTokens.size(), size - follow);
+  std::copy_n(tokens.begin() + follow, length, item.copyTokens.begin());
+  item.copyLength = static_cast<uint32_t>(length);
+  if (const char *path = std::getenv("SPLASH_M5_COPY_DEBUG")) {  // "C id size length tokens..."
+    static FILE *debug = std::fopen(path, "a");
+    if (debug) {
+      std::fprintf(debug, "C %llu %zu %zu", static_cast<unsigned long long>(active.request.id), size, length);
+      for (size_t k = 0; k < length; ++k) std::fprintf(debug, " %u", item.copyTokens[k]);
+      std::fprintf(debug, "\n");
+      std::fflush(debug);
+    }
+  }
+}
+
 Engine::Prepared Engine::prepare(BatchPlan &plan,
                                  std::vector<ModelBatchItem> &items, double now) {
   items.reserve(plan.items.size());
@@ -1000,6 +1055,9 @@ Engine::Prepared Engine::prepare(BatchPlan &plan,
       item.inputTokens =
           std::span<const uint32_t>(active.exactTokens)
               .subspan(scheduled.promptOffset, scheduled.tokenCount);
+    } else if (plan.kind == WorkKind::Decode &&
+               active.request.constraint == ConstraintMode::None) {
+      fillCopyDraft(active, item);
     }
     items.push_back(std::move(item));
   }
