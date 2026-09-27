@@ -219,16 +219,22 @@ The full log, with numbers, is in [FORK.md](../../FORK.md).
    does not transfer here.
 3. **Long context beyond 64K.** At 64K the fork holds its lead (+12% / +24% at 1 / 2
    requests). The absolute slowdown with context is attention (idea 1).
-4. **DFlash draft fine-tuned on Swift.** Swift runs Inco's base-model draft. On maths
-   reasoning that draft already accepts as well on Swift as on the base model (~6.3 tokens
-   per step). The open question is Swift's everyday prose and code, where a draft trained on
-   Swift's own outputs should do better. Cloud compute for this is what
-   [Support](#support) is for.
-5. **Batch width 8.** A plan exists (the converter project's `docs/PLAN_CONCURRENCY.md`).
-6. **Q4_K and other GGUF formats.** G4a applies to them but is only measured on Q8_0.
-7. **Token-agreement check.** Compare next-token choices position by position against
+4. **A better draft model for Swift.** Swift runs Inco's base-model draft. On maths reasoning
+   it already accepts as well on Swift as on the base model (~6.3 tokens per step).
+   TensorFold reports that fine-tuning DFlash2 on 372K target tokens gave no gain, and that
+   the limit is the drafter's candidates. The promising route is distillation from the
+   target's top-k logits at scale. Cloud compute for this is what [Support](#support) is for.
+5. **Draft trees and a copy rule** (from TensorFold). Verify a small best-first tree instead of
+   one chain (+28% tokens per pass on code there), and draft verbatim copies from the context
+   when 8+ tokens match (~25% of agent rounds, 94% right). Both need DeltaNet state to branch.
+6. **Draft vocabulary** (from TensorFold). 99.64% of generated tokens have ids below 98,304, so
+   the draft's head could read 40% of the vocabulary. Output is unchanged, because
+   verification still reads all of it.
+7. **Batch width 8.** A plan exists (the converter project's `docs/PLAN_CONCURRENCY.md`).
+8. **Q4_K and other GGUF formats.** G4a applies to them but is only measured on Q8_0.
+9. **Token-agreement check.** Compare next-token choices position by position against
    upstream, as the M1 port does. It is a finer quality gate than a task set.
-8. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max.
+10. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max.
 
 ## Reproduce
 
@@ -256,5 +262,8 @@ python3 dev/m5/charts.py                          # the charts in docs/m5/charts
 
 ## Support
 
-If this is useful and you would like to help fund cloud compute for fine-tuning a DFlash
-draft model for Swift: [ko-fi.com/severalviolins](https://ko-fi.com/severalviolins).
+If this is useful and you would like to help, the next compute-heavy step is a better draft
+model for Swift. [TensorFold](https://github.com/ashhart/TensorFold) found that a plain
+fine-tune of DFlash2 on the target's tokens did not help. So the plan is distillation from the
+target's own top-k logits at scale, which needs rented GPUs:
+[ko-fi.com/severalviolins](https://ko-fi.com/severalviolins).
