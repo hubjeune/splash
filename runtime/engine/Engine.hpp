@@ -4,6 +4,7 @@
 #include "engine/Cache.hpp"
 #include "engine/MemoryGovernor.hpp"
 #include "engine/Scheduler.hpp"
+#include "engine/Throttle.hpp"
 #include "engine/Types.hpp"
 #include "ops/PagedKv.hpp"
 
@@ -30,6 +31,13 @@ struct EngineConfig final {
   // failed allocation and, after a suspension the pause caused, while
   // resident lanes drain; never on the ordinary decode path.
   std::function<bool()> growthPaused;
+  // GPU duty-cycle target, in [1, 100]; the default is unthrottled. The
+  // engine is its only owner and applies it at the command-completion safe
+  // point, never while idle.
+  uint32_t powerPercent = kUnthrottledPowerPercent;
+  // Startup abort/shutdown predicate for a bounded throttle sleep, so a stop
+  // signal is never held behind a duty-cycle sleep. Empty means none.
+  std::function<bool()> cancelled;
 };
 
 struct ResourceWaitSnapshot final {
@@ -256,6 +264,10 @@ private:
   void signalResourceProgress() noexcept;
   void apply(const BatchPlan &plan, std::span<const ModelStepResult> results,
              double wallMilliseconds, bool representativePrefillTiming);
+  // The GPU duty-cycle safe point: a batch that finished with more work
+  // ready has its measured interval smoothed and its sleep applied before
+  // the engine runs the next command.
+  void throttle(const BatchPlan &plan, double wallMilliseconds);
   void finish(Request &request, EngineFinishReason reason,
               std::span<const float> optionLogits);
   void finishFailure(Request &request, Failure failure);
@@ -267,6 +279,7 @@ private:
   Cache &cache_;
   model::Model &model_;
   EngineEventSink &events_;
+  GpuThrottle throttle_;
   Scheduler scheduler_;
   std::unordered_map<uint64_t, Request> requests_;
   // Pressure preempted work, a resident lane still holds its state cell, and

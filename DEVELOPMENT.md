@@ -98,6 +98,7 @@ loopback, so use a listener that includes loopback when launching agents locally
 | `--port` | `SPLASH_PORT` or `8000` | HTTP port. |
 | `--max-memory` | Auto | Ceiling on Metal allocations, e.g. `28G`; not combined process RSS. |
 | `--max-context` | Auto | Context limit, up to `256K`, e.g. `100K`. |
+| `--power` | `100` | GPU duty-cycle percentage, `1`..`100`; lower values cap sustained GPU load. See [GPU power](#gpu-power). |
 | `--max-cache-disk` | `0` (off) | Session-local SSD cache, e.g. `16G`. See [disk cache](#disk-cache). |
 | `--kv-format` | `int8` | Target KV storage: `int8` or `bf16`. |
 | `--max-image-pixels` | `4194304` | Maximum resized pixels per image. |
@@ -117,6 +118,27 @@ cannot fit, startup prints a memory budget breakdown and stops.
 a server on another port), preserving other providers, settings and sessions.
 The browser chat and agent launchers connect to the running server; a model
 need not appear in a client's catalog to serve it by its full repository ID.
+
+### GPU power
+
+`--power N` targets a GPU duty cycle of `N` percent, `1`..`100`, exactly as
+DwarfStar4's `--power` does. `100` is the default and means full speed: the
+flag is a strict no-op there, with no measurement and no sleep. Lower values
+measure the GPU work interval of each completed command, smooth it, and sleep
+`work × (100 − N) / N` before the next one, so `work / (work + sleep)` equals
+`N` percent. That reduces sustained heat, fan noise and battery drain without
+changing model output. Prefill and decode keep separate averages, since a
+prefill command is orders of magnitude longer than a decode one.
+
+The throttle is a startup ceiling like `--max-memory`, not a runtime control,
+and the native command's sleep is applied between commands while work is
+pending: an idle engine never sleeps. Long sleeps proceed in 10 ms slices that
+re-check shutdown, so Ctrl+C and SIGTERM stay responsive. An out-of-range
+value is rejected at startup.
+
+```sh
+splash serve --model mlx-community/Qwen3.8-27B-4bit --power 50
+```
 
 ### KV cache precision
 

@@ -238,6 +238,7 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(
                     argv[argv.index("--max-memory") + 1], str(28 * 1024**3)
                 )
+                self.assertEqual(argv[argv.index("--power") + 1], "60")
                 self.assertEqual(
                     argv[argv.index("--binary") + 1], str(launcher.paths.BINARY)
                 )
@@ -294,6 +295,8 @@ class LauncherTests(unittest.TestCase):
                         "100K",
                         "--max-memory",
                         "28G",
+                        "--power",
+                        "60",
                         "--max-cache-disk",
                         "5G",
                         "--allowed-host",

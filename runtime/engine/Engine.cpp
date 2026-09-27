@@ -20,7 +20,8 @@ uint32_t replayStateBoundary(uint32_t tokens) noexcept {
 
 Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
                EngineEventSink &events)
-    : config_(config), cache_(cache), model_(model), events_(events) {
+    : config_(config), cache_(cache), model_(model), events_(events),
+      throttle_(config_.powerPercent, config_.cancelled) {
   if (!config_.maxContext || !config_.vocabularySize) {
     throw std::invalid_argument("context and vocabulary sizes must be positive");
   }
@@ -220,10 +221,20 @@ bool Engine::tick(double now) {
     Pending command = std::move(*pending_);
     pending_.reset();
     std::vector<ModelStepResult> results = command.ticket->wait();
-    if (!command.plan.empty())
+    // An empty plan carries only KV copies: no batch work, nothing to
+    // throttle.
+    const bool batch = !command.plan.empty();
+    if (batch)
       apply(command.plan, results, command.ticket->wallMilliseconds(),
             command.ticket->prefillTimingIsRepresentative());
     sweepTerminal();
+    // Tokens and cache state land before the pause, so a client sees the
+    // completed work at once. The duty-cycle pause then paces the next GPU
+    // command: a plan ready at this safe point means the engine has work to
+    // leave hot, and no plan means it is idle and must not sleep. The
+    // default power 100 never reaches here.
+    if (batch && throttle_.throttling() && scheduler_.next())
+      throttle(command.plan, command.ticket->wallMilliseconds());
     return true;
   }
 
@@ -1373,6 +1384,16 @@ void Engine::apply(const BatchPlan &plan,
              active.scoreLogits);
     }
   }
+}
+
+void Engine::throttle(const BatchPlan &plan, double wallMilliseconds) {
+  // One command-completion safe point owns the GPU duty cycle. The work kind
+  // keeps a prefill's interval out of a decode's sleep budget, as DwarfStar4
+  // keeps its layer and decoded-token averages apart.
+  throttle_.noteWork(plan.kind == WorkKind::Prefill
+                         ? ThrottleWorkKind::Prefill
+                         : ThrottleWorkKind::Decode,
+                     wallMilliseconds);
 }
 
 void Engine::finish(Request &active, EngineFinishReason reason,

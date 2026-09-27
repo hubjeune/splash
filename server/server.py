@@ -1828,6 +1828,17 @@ def _parse_max_cache_disk(value):
     return result
 
 
+def _parse_power(value):
+    message = "must be an integer duty-cycle percentage from 1 to 100"
+    try:
+        result = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(message) from None
+    if not 1 <= result <= 100:
+        raise argparse.ArgumentTypeError(message)
+    return result
+
+
 def _parse_max_memory(value):
     if value == "auto":
         return None
@@ -1911,6 +1922,13 @@ def parse_args(argv=None):
     parser.add_argument("--max-context", type=_parse_max_context, default=None)
     parser.add_argument("--max-memory", type=_parse_max_memory, default=None)
     parser.add_argument(
+        "--power",
+        type=_parse_power,
+        default=100,
+        help="GPU duty-cycle percentage, 1..100 (default: 100, unthrottled); lower values "
+        "cap sustained GPU load to reduce heat, fan noise and battery drain",
+    )
+    parser.add_argument(
         "--kv-format",
         choices=("int8", "bf16"),
         default="int8",
@@ -1981,6 +1999,8 @@ def _native_command(args):
         command.append(str(args.max_cache_disk))
     if args.kv_format != "int8":
         command.extend(("--kv-format", args.kv_format))
+    if args.power != 100:
+        command.extend(("--power", str(args.power)))
     return command
 
 

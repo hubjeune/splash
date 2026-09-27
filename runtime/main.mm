@@ -51,6 +51,7 @@ struct NativeArguments final {
   uint32_t maxContext = 0;
   uint64_t maxMemoryBytes = 0;
   uint64_t maxCacheDiskBytes = 0;
+  uint32_t powerPercent = engine::kUnthrottledPowerPercent;
   kv::Format kvFormat = kv::Format::Int8;
 };
 
@@ -122,7 +123,7 @@ void printUsage(std::string_view executable) {
   std::cerr << "usage: " << executable
             << " serve-native TARGET_DIRECTORY DRAFT_DIRECTORY"
                " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [MAX_CACHE_DISK_BYTES]"
-               " [--kv-format int8|bf16]\n";
+               " [--kv-format int8|bf16] [--power 1..100]\n";
 }
 
 template <typename T>
@@ -150,6 +151,17 @@ uint32_t parseMaxContext(std::string_view value,
       result > capabilities.maximumContextTokens) {
     throw UsageError("MAX_CONTEXT must be auto or an integer in [1, " +
                      std::to_string(capabilities.maximumContextTokens) + "]");
+  }
+  return result;
+}
+
+// The GPU duty cycle is a percentage, validated once here so the engine's
+// throttle can trust its own config: an out-of-range value fails closed.
+uint32_t parsePowerPercent(std::string_view value) {
+  uint32_t result = 0;
+  if (!parsePositive(value, result) ||
+      !engine::validPowerPercent(result)) {
+    throw UsageError("--power must be an integer in [1, 100]");
   }
   return result;
 }
@@ -186,18 +198,37 @@ NativeArguments parseArguments(int argc, char **argv) {
   }
   NativeArguments result;
   int next = 6;
-  if (next < argc && std::string_view(argv[next]) != "--kv-format") {
+  if (next < argc && std::string_view(argv[next]) != "--kv-format" &&
+      std::string_view(argv[next]) != "--power") {
     const std::string_view quota(argv[next++]);
     if (quota != "0" && !parsePositive(quota, result.maxCacheDiskBytes))
       throw UsageError("MAX_CACHE_DISK_BYTES must be a nonnegative integer");
   }
-  if (next < argc) {
-    if (argc - next != 2 || std::string_view(argv[next]) != "--kv-format")
-      throw UsageError("expected --kv-format int8 or bf16");
-    const std::string_view format(argv[next + 1]);
-    if (format != "int8" && format != "bf16")
-      throw UsageError("--kv-format requires int8 or bf16");
-    result.kvFormat = format == "int8" ? kv::Format::Int8 : kv::Format::BFloat16;
+  // Both trailing options are optional, may appear in either order, and may
+  // appear together; any other trailing input is rejected.
+  bool sawKvFormat = false, sawPower = false;
+  while (next < argc) {
+    const std::string_view option(argv[next]);
+    if (option != "--kv-format" && option != "--power")
+      throw UsageError("expected --kv-format int8|bf16 or --power 1..100");
+    if (next + 1 >= argc)
+      throw UsageError("expected --kv-format int8|bf16 or --power 1..100");
+    if (option == "--kv-format") {
+      if (sawKvFormat)
+        throw UsageError("--kv-format may be given once");
+      sawKvFormat = true;
+      const std::string_view format(argv[next + 1]);
+      if (format != "int8" && format != "bf16")
+        throw UsageError("--kv-format requires int8 or bf16");
+      result.kvFormat =
+          format == "int8" ? kv::Format::Int8 : kv::Format::BFloat16;
+    } else {
+      if (sawPower)
+        throw UsageError("--power may be given once");
+      sawPower = true;
+      result.powerPercent = parsePowerPercent(argv[next + 1]);
+    }
+    next += 2;
   }
   result.modelRoot = requireModelRoot(argv[2], argv[3]);
   result.model = model::inspectModelPackage(result.modelRoot);
@@ -247,6 +278,7 @@ bootstrapConfig(const NativeArguments &arguments) {
   config.resources.maximumCacheDiskBytes = arguments.maxCacheDiskBytes;
   config.resources.kvFormat = arguments.kvFormat;
   config.nativeLoop.engine.maxContext = arguments.maxContext;
+  config.nativeLoop.engine.powerPercent = arguments.powerPercent;
   config.nativeLoop.engineInstanceId = engineInstanceId();
   config.nativeLoop.maskWordsPerToken = maskWordsPerToken;
   config.protocolLimits.maxTokenBatch =
