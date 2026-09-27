@@ -128,14 +128,15 @@ measure the GPU work interval of each completed command, smooth it, and sleep
 `work × (100 − N) / N` before the next one, so `work / (work + sleep)` equals
 `N` percent. That reduces sustained heat, fan noise and battery drain. Prefill
 and decode keep separate averages, since a prefill command is far longer than
-a decode one. A long prompt would nevertheless be one full-speed GPU command,
-because the sleep can only land at a command boundary, so while throttling the
-engine also bounds each prefill command to a short measured work interval and
-lets the same sleep pace the prompt itself. The shorter commands select a
-different GPU kernel tiling from power 100's whole-prompt commands, so a
-throttled run can pick a different token than power 100 when the next-token
-scores are tied or nearly tied. The sleep itself does not alter the
-computation, and power 100 stays a byte-for-byte no-op.
+a decode one. A prefill command holds up to the 2048-row prompt budget, and
+because the sleep only lands at a command boundary, a long prompt would
+otherwise run in full-speed 2048-row bursts. While throttling, the engine
+therefore also bounds each prefill command near the same 500 ms work target,
+so a long prompt crosses many shorter commands and the same sleep paces it.
+Those shorter commands select a different GPU kernel tiling from power 100's
+larger commands, so a throttled run can pick a different token than power 100
+when the next-token scores are tied or nearly tied. The sleep itself does not
+alter the computation, and power 100 stays a byte-for-byte no-op.
 
 The throttle is a startup ceiling like `--max-memory`, not a runtime control,
 and the native command's sleep is applied between commands while work is
