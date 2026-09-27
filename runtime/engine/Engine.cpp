@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <set>
+#include <sstream>
+#include <string>
 #include <cstdlib>
 #include <cmath>
 #include <limits>
@@ -1322,6 +1325,30 @@ void Engine::apply(const BatchPlan &plan,
         std::fprintf(acceptLog, "%u %u %u\n", plan.width(), result.draftedTokens,
                      result.acceptedDraftTokens);
         std::fflush(acceptLog);
+      }
+      // splash-m5: SPLASH_M5_TOKEN_LOG=PATH, for the copy-rule study (dev/m5/copy_rule.py):
+      // "P id n tokens..." (the prompt, once per request), then per decode step
+      // "S id accepted n tokens..." (the tokens this step emitted).
+      static FILE *tokenLog = [] {
+        const char *path = std::getenv("SPLASH_M5_TOKEN_LOG");
+        return path && *path ? std::fopen(path, "a") : nullptr;
+      }();
+      if (tokenLog) {
+        static std::set<std::string> prompted;
+        std::ostringstream id;
+        id << active.request.id;
+        std::ostringstream line;
+        if (prompted.insert(id.str()).second) {
+          line << "P " << id.str() << ' ' << active.promptTokens;
+          for (uint32_t i = 0; i < active.promptTokens && i < active.exactTokens.size(); ++i)
+            line << ' ' << active.exactTokens[i];
+          line << '\n';
+        }
+        line << "S " << id.str() << ' ' << result.acceptedDraftTokens << ' ' << result.outputTokens.size();
+        for (const auto token : result.outputTokens) line << ' ' << token;
+        line << '\n';
+        std::fputs(line.str().c_str(), tokenLog);
+        std::fflush(tokenLog);
       }
       // A terminal anchor is emitted without a target KV row; it never enters
       // a cached block.
