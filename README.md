@@ -88,6 +88,7 @@ window. To set your own limits or cache options, add these to `splash serve`:
 | --- | --- |
 | `--max-memory 28G` | Cap Metal memory use. |
 | `--max-context 100K` | Set the context limit. |
+| `--power 50` | Target a GPU duty cycle of 50% to cut heat and fan noise. Default: 100%. |
 | `--language-only` | Skip vision; serve text only. |
 | `--kv-format bf16` | Use BF16 KV cache. Default: 8-bit (INT8). |
 | `--max-cache-disk 16G` | Offload KV cache and GDN states to SSD as needed. Off by default. |

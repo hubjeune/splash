@@ -234,6 +234,8 @@ def serve(args):
             "auto" if args.max_memory is None else str(args.max_memory),
             "--max-context",
             "auto" if args.max_context is None else str(args.max_context),
+            "--power",
+            str(args.power),
         ]
         if args.kv_format != "int8":
             command.extend(("--kv-format", args.kv_format))
@@ -390,6 +392,20 @@ def _parse_max_context(value):
     return result
 
 
+def _parse_power(value):
+    try:
+        result = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "must be an integer duty-cycle percentage from 1 to 100"
+        ) from None
+    if not 1 <= result <= 100:
+        raise argparse.ArgumentTypeError(
+            "must be an integer duty-cycle percentage from 1 to 100"
+        )
+    return result
+
+
 def _version():
     if not paths.PACKAGED:
         return "Splash (source checkout)"
@@ -528,6 +544,13 @@ def parse_args(argv=None):
         "--max-context",
         type=_parse_max_context,
         help="context token limit, up to 256K (K = 1024; default: auto within the memory budget)",
+    )
+    server.add_argument(
+        "--power",
+        type=_parse_power,
+        default=100,
+        help="GPU duty-cycle percentage, 1..100 (default: 100, unthrottled); lower values "
+        "cap sustained GPU load to reduce heat, fan noise and battery drain",
     )
     server.add_argument(
         "--allowed-host",

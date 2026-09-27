@@ -544,6 +544,7 @@ def main_args(**overrides):
             "max_context": None,
             "max_memory": None,
             "max_cache_disk": 0,
+            "power": 100,
             "max_image_pixels": api.image_input.MAX_PIXELS,
             "max_new_tokens": 16,
             "request_timeout": 2,
@@ -3381,6 +3382,28 @@ class ServerTest(unittest.TestCase):
             self.assertIn("use 0 to disable, or a size such as 5G", error.getvalue())
         self.assertEqual(args.kv_format, "int8")
         self.assertNotIn("--kv-format", api._native_command(args))
+        self.assertEqual(args.power, 100)
+        self.assertNotIn("--power", api._native_command(args))
+        power_args = api.parse_args([*required, "--power", "40"])
+        self.assertEqual(power_args.power, 40)
+        self.assertEqual(api._native_command(power_args)[-2:], ["--power", "40"])
+        self.assertEqual(
+            api._native_command(
+                api.parse_args([*required, "--power", "40", "--kv-format", "bf16"])
+            )[-4:],
+            ["--kv-format", "bf16", "--power", "40"],
+        )
+        for invalid in ("0", "101", "-1", "half", "50.0", ""):
+            with (
+                self.subTest(invalid=invalid),
+                mock.patch("sys.stderr", io.StringIO()) as error,
+                self.assertRaises(SystemExit),
+            ):
+                api.parse_args([*required, "--power", invalid])
+            self.assertIn(
+                "must be an integer duty-cycle percentage from 1 to 100",
+                error.getvalue(),
+            )
         bf16_args = api.parse_args([*required, "--kv-format", "bf16"])
         self.assertEqual(api._native_command(bf16_args)[-2:], ["--kv-format", "bf16"])
         disk_bf16_args = api.parse_args(

@@ -343,6 +343,9 @@ std::unique_ptr<RuntimeBootstrap> RuntimeBootstrap::start(
         [governor = &resources->memoryGovernor()] {
           return !governor->snapshot().hostGrowthAllowed;
         };
+    // A duty-cycle sleep re-checks the process's own abort predicate, so a
+    // stop signal cut through it as it cuts through a wait.
+    config.nativeLoop.engine.cancelled = config.resources.cancelled;
     nativeLoop = std::make_unique<NativeRuntime>(
         config.nativeLoop, resources->cache(), *modelRuntime,
         std::move(output), std::move(statusProvider), NativeLoopClocks{},
