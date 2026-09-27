@@ -73,6 +73,8 @@ public:
   // Prefill chunks each request received, to prove a failure was isolated to
   // the last one rather than to a prefill that never chunked.
   std::unordered_map<uint64_t, uint32_t> prefillChunks;
+  // Actual rows of every model prefill command, in dispatch order.
+  std::vector<uint32_t> prefillCommandRows;
   uint32_t widestBatch = 0;
   void checkHealth() override {
     if (onHealthCheck)
@@ -112,6 +114,7 @@ public:
     std::vector<ModelStepResult> results;
     for (const auto &item : items) {
       ++prefillChunks[item.requestId];
+      prefillCommandRows.push_back(item.tokenCount);
       auto found = requests_.find(item.requestId);
       const bool last =
           found != requests_.end() &&
@@ -347,6 +350,48 @@ void testPromptProgress() {
   }
   require(count == 1 && cancelled,
           "cancelled prefill published further progress");
+}
+
+void testPowerSlicesPrefillCommands() {
+  const auto prefillCommands = [](uint32_t powerPercent) {
+    Backing backing(128);
+    KvPool pool(backing);
+    engine::Cache resources(pool, CacheNamespace{});
+    Executor executor;
+    std::vector<uint8_t> output;
+    double monotonic = 100.0;
+    engine::NativeLoopConfig config;
+    config.engine.maxContext = 8192;
+    config.engine.powerPercent = powerPercent;
+    engine::NativeRuntime loop(
+        config, resources, executor,
+        [&](std::span<const uint8_t> bytes) {
+          output.insert(output.end(), bytes.begin(), bytes.end());
+        },
+        [] { return std::string("{\"schema_version\":5,\"ready\":true}"); },
+        {[] { return uint64_t{1'000'000}; }, [&] { return monotonic += 0.25; }});
+    loop.announceReady();
+    auto input = request(1);
+    input.promptTokens.resize(512);
+    for (uint32_t i = 0; i < input.promptTokens.size(); ++i)
+      input.promptTokens[i] = i + 1;
+    auto encoded = protocol::serializeMessage(protocol::Message{input});
+    require(encoded && loop.receive(*encoded.value), "power request failed");
+    runUntilIdle(loop);
+    return executor.prefillCommandRows;
+  };
+  // Power 100 keeps whole-budget commands; a throttled engine crosses many
+  // bounded commands so the command-completion sleep paces the prompt itself.
+  const std::vector<uint32_t> unthrottled = prefillCommands(100);
+  const std::vector<uint32_t> throttled = prefillCommands(50);
+  require(unthrottled.size() < throttled.size(),
+          "throttled prefill did not cross more command boundaries");
+  require(throttled.size() >= 3 &&
+              std::all_of(throttled.begin(), throttled.end(),
+                          [](uint32_t rows) {
+                            return rows <= kThrottledPrefillStartupRows;
+                          }),
+          "throttled prefill command exceeded its work slice");
 }
 
 void testWireLifecycleAndCacheHit() {
@@ -1279,6 +1324,7 @@ int main() {
   try {
     testWireLifecycleAndCacheHit();
     testPromptProgress();
+    testPowerSlicesPrefillCommands();
     testCapacityFailureHasOneTerminalFrame();
     testFatalFramingClosesConnection();
     testRequestErrorKeepsFraming();

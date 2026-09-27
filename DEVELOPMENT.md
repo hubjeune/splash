@@ -128,7 +128,11 @@ measure the GPU work interval of each completed command, smooth it, and sleep
 `work × (100 − N) / N` before the next one, so `work / (work + sleep)` equals
 `N` percent. That reduces sustained heat, fan noise and battery drain without
 changing model output. Prefill and decode keep separate averages, since a
-prefill command is orders of magnitude longer than a decode one.
+prefill command is far longer than a decode one. A long prompt would
+nevertheless be one full-speed GPU command, because the sleep can only land at
+a command boundary, so while throttling the engine also bounds each prefill
+command to a short measured work interval and lets the same sleep pace the
+prompt itself.
 
 The throttle is a startup ceiling like `--max-memory`, not a runtime control,
 and the native command's sleep is applied between commands while work is
