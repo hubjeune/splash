@@ -126,13 +126,16 @@ DwarfStar4's `--power` does. `100` is the default and means full speed: the
 flag is a strict no-op there, with no measurement and no sleep. Lower values
 measure the GPU work interval of each completed command, smooth it, and sleep
 `work × (100 − N) / N` before the next one, so `work / (work + sleep)` equals
-`N` percent. That reduces sustained heat, fan noise and battery drain without
-changing model output. Prefill and decode keep separate averages, since a
-prefill command is far longer than a decode one. A long prompt would
-nevertheless be one full-speed GPU command, because the sleep can only land at
-a command boundary, so while throttling the engine also bounds each prefill
-command to a short measured work interval and lets the same sleep pace the
-prompt itself.
+`N` percent. That reduces sustained heat, fan noise and battery drain. Prefill
+and decode keep separate averages, since a prefill command is far longer than
+a decode one. A long prompt would nevertheless be one full-speed GPU command,
+because the sleep can only land at a command boundary, so while throttling the
+engine also bounds each prefill command to a short measured work interval and
+lets the same sleep pace the prompt itself. The shorter commands select a
+different GPU kernel tiling from power 100's whole-prompt commands, so a
+throttled run can pick a different token than power 100 when the next-token
+scores are tied or nearly tied. The sleep itself does not alter the
+computation, and power 100 stays a byte-for-byte no-op.
 
 The throttle is a startup ceiling like `--max-memory`, not a runtime control,
 and the native command's sleep is applied between commands while work is
