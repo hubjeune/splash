@@ -4,20 +4,25 @@ Splish is an **unofficial** fork of [Inco's Splash](https://github.com/incoai/sp
 affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **M5**-family
 GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB).
 
-**Against Splash 1.1.0 as shipped**, on the same Mac with the same models (tok/s gain; method
-in [Versus stock Splash](#versus-stock-splash)):
+**Against Splash 1.1.0 as shipped**, on the same Mac with the same models. Each cell is decode
+tok/s, stock → Splish (gain); at 2–4 requests it is the total across requests. Method in
+[Versus stock Splash](#versus-stock-splash).
 
-| Workload | 1 request | 2–4 requests |
-|---|---:|---:|
-| Inco's Qwen3.8-27B, long reasoning | **+35%** | **+31% to +48%** |
-| Inco's Qwen3.8-27B, short answers (512 tokens) | **+17% to +26%** | **+15% to +37%** |
-| Inco's Qwen3.8-27B, TensorFold's client (code, chat) | **+14% to +29%** | |
-| Inco's Qwen3.8-27B, a 64K-token document | **+12%** | **+24%** (2 requests) |
-| Swift-1.5 (a Qwen3.8-27B fine-tune), long reasoning | **+27%** | **+32% to +52%** |
-| Qwen3.6-35B-A3B, long reasoning | +5% | **+18% to +22%** |
-| Whole-file code edits, copy rule on top | **+24% to +42%** | |
+| Workload | 1 request | 2 requests | 3 requests | 4 requests |
+|---|---:|---:|---:|---:|
+| Inco's Qwen3.8-27B, long reasoning | 131 → **178** (+35%) | 223 → **292** (+31%) | 222 → **330** (+48%) | 299 → **392** (+31%) |
+| Inco's Qwen3.8-27B, short answers, greedy | 78 → **99** (+26%) | 134 → **164** (+23%) | 138 → **171** (+24%) | 183 → **210** (+15%) |
+| Inco's Qwen3.8-27B, short answers, sampled | 74 → **91** (+23%) | 118 → **151** (+28%) | 125 → **171** (+37%) | 163 → **209** (+28%) |
+| Inco's Qwen3.8-27B, TensorFold's client: code | 142 → **176** (+24%) | | | |
+| Inco's Qwen3.8-27B, TensorFold's client: chat | 75 → **92** (+22%) | | | |
+| Inco's Qwen3.8-27B, a 64K-token document | 65 → **73** (+12%) | 96 → **118** (+24%) | | |
+| Swift-1.5 (a Qwen3.8-27B fine-tune), long reasoning | 141 → **179** (+27%) | 224 → **296** (+32%) | 224 → **342** (+52%) | 288 → **400** (+39%) |
+| Qwen3.6-35B-A3B, long reasoning | 331 → **348** (+5%) | 486 → **573** (+18%) | 553 → **672** (+22%) | 642 → **754** (+18%) |
 
-Quality is unchanged: 95/95 on the same task set for every model and build tested.
+On top of that, the copy rule speeds up whole-file code edits (Swift-1.5, Splish without → with
+it): 144 → **180** tok/s (+24%) and 136 → **194** tok/s (+42%).
+
+Quality is unchanged: 95/95 on the same task set, on both engines, for each model above.
 
 What the fork adds on top of Splash 1.1.0:
 
