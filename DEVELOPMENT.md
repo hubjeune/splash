@@ -136,10 +136,11 @@ path's floating-point kernels are not bit-invariant to a command's row budget,
 so a different split selects a different accumulation order and can change a
 decoded token at a tie; keeping the unthrottled decomposition makes a
 throttled run byte-identical to power 100, including the KV cache it leaves
-behind. A prompt
-that fits in one command therefore prefills at full speed and the sleep lands
-after it; a longer prompt crosses up to 2048-row commands and state
-boundaries, and the same sleep interleaves with it.
+behind. The residual is a prompt that fits inside a single command: it
+prefills at full speed and the sleep lands after it, because there is no
+earlier command boundary to pace within. A longer prompt crosses up to
+2048-row commands and state boundaries, and the same sleep interleaves with
+it.
 
 The throttle is a startup ceiling like `--max-memory`, not a runtime control,
 and the native command's sleep is applied between commands while work is
