@@ -1,5 +1,8 @@
 # Splish
 
+**Up to 1.5× faster than Splash as shipped, and about 1.25× on a single request**, with
+unchanged quality: Qwen3.8-27B-family 4-bit models on a 40-core M5 Max.
+
 Splish is an **unofficial** fork of [Inco's Splash](https://github.com/incoai/splash), not
 affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **M5**-family
 GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB).
