@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380">
+<style>
+  .bg{fill:#ffffff} .t{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .l{fill:#57606a;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .v{fill:#1f2328;font:11px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .g{stroke:#d0d7de;stroke-width:1} .s0{fill:#8c959f} .s1{fill:#0969da} .s2{fill:#1a7f37} .s3{fill:#bf8700}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117} .t,.v{fill:#e6edf3} .l{fill:#8d96a0} .g{stroke:#30363d}
+    .s0{fill:#6e7681} .s1{fill:#4493f8} .s2{fill:#3fb950} .s3{fill:#d29922}}
+</style>
+<rect class="bg" width="760" height="380" rx="8"/>
+<text class="t" x="60" y="28">Long reasoning, steady state: stock 1.1.0 vs splash-m5</text>
+<line class="g" x1="60" x2="740" y1="310.0" y2="310.0"/>
+<text class="l" x="52" y="314.0" text-anchor="end">0</text>
+<line class="g" x1="60" x2="740" y1="246.5" y2="246.5"/>
+<text class="l" x="52" y="250.5" text-anchor="end">200</text>
+<line class="g" x1="60" x2="740" y1="183.0" y2="183.0"/>
+<text class="l" x="52" y="187.0" text-anchor="end">400</text>
+<line class="g" x1="60" x2="740" y1="119.5" y2="119.5"/>
+<text class="l" x="52" y="123.5" text-anchor="end">600</text>
+<line class="g" x1="60" x2="740" y1="56.0" y2="56.0"/>
+<text class="l" x="52" y="60.0" text-anchor="end">800</text>
+<text class="l" x="14" y="183.0" transform="rotate(-90 14 183.0)" text-anchor="middle">aggregate tok/s</text>
+<rect class="s0" x="68.5" y="268.3" width="31.0" height="41.7" rx="2"/>
+<text class="v" x="84.0" y="264.3" text-anchor="middle">131</text>
+<rect class="s1" x="102.5" y="253.6" width="31.0" height="56.4" rx="2"/>
+<text class="v" x="118.0" y="249.6" text-anchor="middle">178</text>
+<text class="l" x="102.5" y="328" text-anchor="middle">27B, 1</text>
+<rect class="s0" x="153.5" y="239.1" width="31.0" height="70.9" rx="2"/>
+<text class="v" x="169.0" y="235.1" text-anchor="middle">223</text>
+<rect class="s1" x="187.5" y="217.3" width="31.0" height="92.7" rx="2"/>
+<text class="v" x="203.0" y="213.3" text-anchor="middle">292</text>
+<text class="l" x="187.5" y="328" text-anchor="middle">27B, 2</text>
+<rect class="s0" x="238.5" y="239.5" width="31.0" height="70.5" rx="2"/>
+<text class="v" x="254.0" y="235.5" text-anchor="middle">222</text>
+<rect class="s1" x="272.5" y="205.4" width="31.0" height="104.6" rx="2"/>
+<text class="v" x="288.0" y="201.4" text-anchor="middle">330</text>
+<text class="l" x="272.5" y="328" text-anchor="middle">27B, 3</text>
+<rect class="s0" x="323.5" y="215.1" width="31.0" height="94.9" rx="2"/>
+<text class="v" x="339.0" y="211.1" text-anchor="middle">299</text>
+<rect class="s1" x="357.5" y="185.6" width="31.0" height="124.4" rx="2"/>
+<text class="v" x="373.0" y="181.6" text-anchor="middle">392</text>
+<text class="l" x="357.5" y="328" text-anchor="middle">27B, 4</text>
+<rect class="s0" x="408.5" y="265.4" width="31.0" height="44.6" rx="2"/>
+<text class="v" x="424.0" y="261.4" text-anchor="middle">140</text>
+<rect class="s1" x="442.5" y="253.2" width="31.0" height="56.8" rx="2"/>
+<text class="v" x="458.0" y="249.2" text-anchor="middle">179</text>
+<text class="l" x="442.5" y="328" text-anchor="middle">Swift, 1</text>
+<rect class="s0" x="493.5" y="238.8" width="31.0" height="71.2" rx="2"/>
+<text class="v" x="509.0" y="234.8" text-anchor="middle">224</text>
+<rect class="s1" x="527.5" y="216.1" width="31.0" height="93.9" rx="2"/>
+<text class="v" x="543.0" y="212.1" text-anchor="middle">296</text>
+<text class="l" x="527.5" y="328" text-anchor="middle">Swift, 2</text>
+<rect class="s0" x="578.5" y="238.8" width="31.0" height="71.2" rx="2"/>
+<text class="v" x="594.0" y="234.8" text-anchor="middle">224</text>
+<rect class="s1" x="612.5" y="201.6" width="31.0" height="108.4" rx="2"/>
+<text class="v" x="628.0" y="197.6" text-anchor="middle">342</text>
+<text class="l" x="612.5" y="328" text-anchor="middle">Swift, 3</text>
+<rect class="s0" x="663.5" y="218.7" width="31.0" height="91.3" rx="2"/>
+<text class="v" x="679.0" y="214.7" text-anchor="middle">288</text>
+<rect class="s1" x="697.5" y="182.9" width="31.0" height="127.1" rx="2"/>
+<text class="v" x="713.0" y="178.9" text-anchor="middle">400</text>
+<text class="l" x="697.5" y="328" text-anchor="middle">Swift, 4</text>
+<rect class="s0" x="60" y="350" width="12" height="12" rx="2"/>
+<text class="l" x="78" y="360">stock 1.1.0</text>
+<rect class="s1" x="167" y="350" width="12" height="12" rx="2"/>
+<text class="l" x="185" y="360">splash-m5</text>
+<text class="l" x="740" y="360" text-anchor="end">model, concurrent requests; mean of 2 rounds</text>
+</svg>

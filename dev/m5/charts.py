@@ -72,6 +72,13 @@ def main():
          ["1 request", "2 requests", "3 requests", "4 requests"], ["stock 1.1.0", "splash-m5"],
          [[73.8, 118.2, 124.9, 163.4], [90.5, 151.3, 171.2, 208.6]], "aggregate tok/s",
          note="temperature 1.0, top_p 0.95, top_k 20")
+    # Long reasoning, steady state (dev/m5/serve_bench.py, 4,096 tokens, sampled), overnight 2026-09-26.
+    bars("steady-state", "Long reasoning, steady state: stock 1.1.0 vs splash-m5",
+         ["27B, 1", "27B, 2", "27B, 3", "27B, 4", "Swift, 1", "Swift, 2", "Swift, 3", "Swift, 4"],
+         ["stock 1.1.0", "splash-m5"],
+         [[131.3, 223.2, 222.2, 299.0, 140.5, 224.2, 224.1, 287.7],
+          [177.7, 292.0, 329.5, 391.8, 179.0, 295.8, 341.5, 400.2]], "aggregate tok/s",
+         note="model, concurrent requests; mean of 2 rounds")
     # Swift-1.5 decode step (decode-profile, 2,048-token prompt): stock 1.0.2, tuned 1.0.2, splash-m5 v8.
     bars("swift-step-time", "Swift-1.5 decode step time (lower is better)",
          ["1 request", "2 requests", "3 requests", "4 requests"],
