@@ -9,7 +9,8 @@ unchanged quality: Qwen3.8-27B-family 4-bit models on a 40-core M5 Max.
 
 Splish is an **unofficial** fork of [Inco's Splash](https://github.com/incoai/splash), not
 affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **M5**-family
-GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB).
+GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB, MacBook Pro), macOS 27.0,
+Xcode 27.0 (Metal toolchain 27A266a).
 
 **Against Splash 1.1.0 as shipped**, on the same Mac with the same models. Each cell is decode
 tok/s, stock → Splish (gain); at 2–4 requests it is the total across requests. Models are 4-bit
@@ -109,7 +110,9 @@ prints what it chose. Then connect an agent (`./splish opencode`, `claude`, `cod
 `pi`) or any OpenAI- or Anthropic-compatible client, as with Splash
 ([upstream README](docs/UPSTREAM_README.md)).
 
-The tuned choices are for a **40-core M5 Max**. On any other Mac, `./splish` keeps Splash's own
+The tuned choices are for a **40-core M5 Max on macOS 27**. An independent tuning run on another
+40-core M5 Max on macOS 26.6 picked different winners for some shapes; the gains were in the same
+direction but about half the size. That is why choices should be tuned per machine. On any other Mac, `./splish` keeps Splash's own
 defaults and still turns on the copy rule. Other M5 chips will need their own choices; an
 auto-tuner is [upcoming](#upcoming).
 
