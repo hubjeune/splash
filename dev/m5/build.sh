@@ -6,3 +6,7 @@ xcrun -sdk macosx clang++ -std=c++20 -O2 -Wall -Wextra -Werror -Iruntime -Idev -
   -mmacosx-version-min=26.4 -fobjc-arc dev/m5/kernel_bench.mm build/engine/libsplash.a \
   -framework Foundation -framework Metal -framework IOKit -o build/m5/kernel-bench
 echo "built build/m5/kernel-bench"
+xcrun -sdk macosx clang++ -std=c++20 -O2 -Wall -Wextra -Werror -Iruntime -Idev -Ibuild/engine \
+  -mmacosx-version-min=26.4 -fobjc-arc dev/m5/w4a8_prefill.mm build/engine/libsplash.a \
+  -framework Foundation -framework Metal -framework IOKit -o build/m5/w4a8-prefill
+echo "built build/m5/w4a8-prefill"
