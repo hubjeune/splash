@@ -4,31 +4,44 @@ Splish is an **unofficial** fork of [Inco's Splash](https://github.com/incoai/sp
 affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **M5**-family
 GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB).
 
+**Against Splash 1.1.0 as shipped**, on the same Mac with the same models (tok/s gain; method
+in [Versus stock Splash](#versus-stock-splash)):
+
+| Workload | 1 request | 2–4 requests |
+|---|---:|---:|
+| Inco's Qwen3.8-27B, long reasoning | **+35%** | **+31% to +48%** |
+| Inco's Qwen3.8-27B, short answers (512 tokens) | **+17% to +26%** | **+15% to +37%** |
+| Inco's Qwen3.8-27B, TensorFold's client (code, chat) | **+14% to +29%** | |
+| Inco's Qwen3.8-27B, a 64K-token document | **+12%** | **+24%** (2 requests) |
+| Swift-1.5 (a Qwen3.8-27B fine-tune), long reasoning | **+27%** | **+32% to +52%** |
+| Qwen3.6-35B-A3B, long reasoning | +5% | **+18% to +22%** |
+| Whole-file code edits, copy rule on top | **+24% to +42%** | |
+
+Quality is unchanged: 95/95 on the same task set for every model and build tested.
+
 What the fork adds on top of Splash 1.1.0:
 
-- **Faster decode for Qwen3.8-27B-family models.** New split-K verify kernels
-  (`SplitSums32`) and measured kernel choices for the 27B shapes. On Inco's own
-  Qwen3.8-27B package it is **31–48% faster than stock** on long reasoning at 1–4 concurrent
-  requests, and 15–37% on short 512-token answers. It also uses less energy per token at
-  3–4 requests. Quality is unchanged at 95/95.
-- **Qwen3.6-35B-A3B tuned.** The same kernels, with choices from Splash's own tuner, serve
-  Inco's 35B **18–22% faster at 2–4 requests** (+5% at one). Quality 95/95.
+- **New verify kernels for the M5's tensor units.** Split-K kernels that compute each
+  projection's row sums once (`SplitSums32`), plus lighter barriers. They carry the gain at
+  2–4 requests.
+- **Kernel choices measured for the chip** (`tuning/`), loaded from a file
+  (`SPLASH_KERNEL_CHOICES`). They carry most of the single-request gain. Shipped Splash cannot
+  take them: its choices are compiled in, and its tuner is a developer build target that is
+  not in the Homebrew package.
 - **A copy rule for coding agents** (from [TensorFold](https://github.com/ashhart/TensorFold)).
   When the last 16+ tokens repeat earlier context, the next draft is the verbatim
-  continuation. Whole-file edits run **24–42% faster**; everything else is within ±3%. Output
-  is exact: greedy text is byte-identical, and sampled acceptance uses a one-hot draft
-  distribution.
-- **Kernel choices from a file** (`SPLASH_KERNEL_CHOICES`), so a device can be retuned without
-  a rebuild. The same mechanism covers GGUF (block-quantized) decode.
+  continuation. Output is exact: greedy text is byte-identical, and sampled acceptance uses a
+  one-hot draft distribution.
+- **Faster GGUF decode** (the G4a staged kernel), bit-identical output: +3–14% per kernel,
+  ~2% per step.
 - **Tools that keep the numbers honest.** They include a kernel bench checked against fp64, a
-  whole-step benchmark with confidence intervals, bit-for-bit build comparison and a
+  whole-step benchmark with confidence intervals, bit-for-bit build comparison, and a
   steady-state serving benchmark with power readings.
 
-**It is not faster everywhere.** Most of the single-request gain on a 27B comes from measured
-kernel choices, which Splash's own `tune-kernels` tool can also produce for its built-in
-kernels. The fork's own kernels pay off mainly at 2–4 concurrent requests. Long-context decode (past ~40K tokens) is limited by
-attention, and nothing here moved it measurably. On GGUF models the gains are small (~2%).
-[Where stock is ahead or even](#where-stock-is-ahead-or-even) lists these cases.
+**Where it is not faster.** Long-context attention itself is unchanged; the lead at 64K
+comes from everything around it. Qwen3.6-35B at one request gains only 5%, and GGUF models
+about 2%. Energy per token is lower at 3–4 requests, but mixed at 1–2.
+[Where stock is ahead or even](#where-stock-is-ahead-or-even) lists every case.
 
 Everything else is Inco's: the engine, the package format, the models and draft models, and
 the server. The fork tracks upstream releases deliberately (currently Splash 1.1.0; the
