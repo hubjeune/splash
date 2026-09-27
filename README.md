@@ -1,5 +1,9 @@
 # Splish
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/badge/release-splish--v1.0-green.svg)](https://github.com/publicExcess/splish/releases/tag/splish-v1.0)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/severalviolins)
+
 **Up to 1.5× faster than Splash as shipped, and about 1.25× on a single request**, with
 unchanged quality: Qwen3.8-27B-family 4-bit models on a 40-core M5 Max.
 
