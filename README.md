@@ -267,6 +267,14 @@ engines are deterministic run to run.
    | Prose / reasoning | | −0.4 to −0.7% |
    | Steps accepting all 7 drafts | 28% | 45% |
 
+   **A related, complementary approach:** harryslimes'
+   [context-copy reference](https://github.com/harryslimes/ninfer-fast/pull/1) for NInfer and the
+   Pi agent works at the harness level. The model is instructed to emit short copy commands
+   (`<copy start="…" end="…"/>`) instead of retyping text, and the harness expands them. That
+   saves far more on large rewrites, but it changes the model's output format and needs a
+   harness extension. Splish's copy rule keeps the model's exact output and needs nothing from
+   the client, for smaller gains. The two can be combined.
+
 ## What did not
 
 The full log, with numbers, is in [FORK.md](FORK.md).
@@ -379,6 +387,8 @@ memory and versions. Paste it into a
   ([r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/comments/1wmbbf9/splash_engine_qwen3827b_in_native_8bit_at_3755/)).
 - **[giveen/ninfer-ext](https://github.com/giveen/ninfer-ext)** for the reporting layout this
   write-up follows: method first, and losses next to wins.
+- **[harryslimes](https://github.com/harryslimes/ninfer-fast/pull/1)** for the harness-level
+  context-copy approach, the related idea for agents that rewrite files.
 - **[ashhart/TensorFold](https://github.com/ashhart/TensorFold)** for its benchmark client and a
   detailed recipe for the same model on the same chip. Its draft trees, copy rule and draft
   vocabulary are on our list, and its negative results saved us time.
