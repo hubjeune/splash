@@ -3,9 +3,9 @@
   .bg{fill:#ffffff} .t{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
   .l{fill:#57606a;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
   .v{fill:#1f2328;font:11px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
-  .g{stroke:#d0d7de;stroke-width:1} .s0{fill:#8c959f} .s1{fill:#0969da} .s2{fill:#1a7f37} .s3{fill:#bf8700}
+  .g{stroke:#d0d7de;stroke-width:1} .gain{fill:#1a7f37;font:600 11px -apple-system,Segoe UI,Helvetica,Arial,sans-serif} .s0{fill:#8c959f} .s1{fill:#0969da} .s2{fill:#1a7f37} .s3{fill:#bf8700}
   @media (prefers-color-scheme: dark){
-    .bg{fill:#0d1117} .t,.v{fill:#e6edf3} .l{fill:#8d96a0} .g{stroke:#30363d}
+    .bg{fill:#0d1117} .t,.v{fill:#e6edf3} .l{fill:#8d96a0} .g{stroke:#30363d} .gain{fill:#3fb950}
     .s0{fill:#6e7681} .s1{fill:#4493f8} .s2{fill:#3fb950} .s3{fill:#d29922}}
 </style>
 <rect class="bg" width="760" height="380" rx="8"/>
@@ -13,38 +13,43 @@
 <line class="g" x1="60" x2="740" y1="310.0" y2="310.0"/>
 <text class="l" x="52" y="314.0" text-anchor="end">0</text>
 <line class="g" x1="60" x2="740" y1="246.5" y2="246.5"/>
-<text class="l" x="52" y="250.5" text-anchor="end">50</text>
+<text class="l" x="52" y="250.5" text-anchor="end">30</text>
 <line class="g" x1="60" x2="740" y1="183.0" y2="183.0"/>
-<text class="l" x="52" y="187.0" text-anchor="end">100</text>
+<text class="l" x="52" y="187.0" text-anchor="end">60</text>
 <line class="g" x1="60" x2="740" y1="119.5" y2="119.5"/>
-<text class="l" x="52" y="123.5" text-anchor="end">150</text>
+<text class="l" x="52" y="123.5" text-anchor="end">90</text>
 <line class="g" x1="60" x2="740" y1="56.0" y2="56.0"/>
-<text class="l" x="52" y="60.0" text-anchor="end">200</text>
+<text class="l" x="52" y="60.0" text-anchor="end">120</text>
 <text class="l" x="14" y="183.0" transform="rotate(-90 14 183.0)" text-anchor="middle">decode tok/s</text>
-<rect class="s0" x="82.0" y="193.3" width="43.0" height="116.7" rx="2"/>
-<text class="v" x="103.5" y="189.3" text-anchor="middle">92</text>
-<rect class="s1" x="128.0" y="172.1" width="43.0" height="137.9" rx="2"/>
-<text class="v" x="149.5" y="168.1" text-anchor="middle">109</text>
+<rect class="s0" x="82.0" y="115.5" width="43.0" height="194.5" rx="2"/>
+<text class="v" x="103.5" y="111.5" text-anchor="middle">92</text>
+<rect class="s1" x="128.0" y="80.1" width="43.0" height="229.9" rx="2"/>
+<text class="v" x="149.5" y="76.1" text-anchor="middle">109</text>
+<text class="gain" x="149.5" y="62.1" text-anchor="middle">+18%</text>
 <text class="l" x="128.0" y="328" text-anchor="middle">2K</text>
-<rect class="s0" x="218.0" y="216.3" width="43.0" height="93.7" rx="2"/>
-<text class="v" x="239.5" y="212.3" text-anchor="middle">74</text>
-<rect class="s1" x="264.0" y="188.8" width="43.0" height="121.2" rx="2"/>
-<text class="v" x="285.5" y="184.8" text-anchor="middle">95</text>
+<rect class="s0" x="218.0" y="153.8" width="43.0" height="156.2" rx="2"/>
+<text class="v" x="239.5" y="149.8" text-anchor="middle">74</text>
+<rect class="s1" x="264.0" y="108.1" width="43.0" height="201.9" rx="2"/>
+<text class="v" x="285.5" y="104.1" text-anchor="middle">95</text>
+<text class="gain" x="285.5" y="90.1" text-anchor="middle">+29%</text>
 <text class="l" x="264.0" y="328" text-anchor="middle">8K</text>
-<rect class="s0" x="354.0" y="219.1" width="43.0" height="90.9" rx="2"/>
-<text class="v" x="375.5" y="215.1" text-anchor="middle">72</text>
-<rect class="s1" x="400.0" y="208.7" width="43.0" height="101.3" rx="2"/>
-<text class="v" x="421.5" y="204.7" text-anchor="middle">80</text>
+<rect class="s0" x="354.0" y="158.4" width="43.0" height="151.6" rx="2"/>
+<text class="v" x="375.5" y="154.4" text-anchor="middle">72</text>
+<rect class="s1" x="400.0" y="141.1" width="43.0" height="168.9" rx="2"/>
+<text class="v" x="421.5" y="137.1" text-anchor="middle">80</text>
+<text class="gain" x="421.5" y="123.1" text-anchor="middle">+11%</text>
 <text class="l" x="400.0" y="328" text-anchor="middle">32K</text>
-<rect class="s0" x="490.0" y="225.7" width="43.0" height="84.3" rx="2"/>
-<text class="v" x="511.5" y="221.7" text-anchor="middle">66</text>
-<rect class="s1" x="536.0" y="212.6" width="43.0" height="97.4" rx="2"/>
-<text class="v" x="557.5" y="208.6" text-anchor="middle">77</text>
+<rect class="s0" x="490.0" y="169.5" width="43.0" height="140.5" rx="2"/>
+<text class="v" x="511.5" y="165.5" text-anchor="middle">66</text>
+<rect class="s1" x="536.0" y="147.7" width="43.0" height="162.3" rx="2"/>
+<text class="v" x="557.5" y="143.7" text-anchor="middle">77</text>
+<text class="gain" x="557.5" y="129.7" text-anchor="middle">+16%</text>
 <text class="l" x="536.0" y="328" text-anchor="middle">64K</text>
-<rect class="s0" x="626.0" y="241.4" width="43.0" height="68.6" rx="2"/>
-<text class="v" x="647.5" y="237.4" text-anchor="middle">54</text>
-<rect class="s1" x="672.0" y="230.1" width="43.0" height="79.9" rx="2"/>
-<text class="v" x="693.5" y="226.1" text-anchor="middle">63</text>
+<rect class="s0" x="626.0" y="195.7" width="43.0" height="114.3" rx="2"/>
+<text class="v" x="647.5" y="191.7" text-anchor="middle">54</text>
+<rect class="s1" x="672.0" y="176.9" width="43.0" height="133.1" rx="2"/>
+<text class="v" x="693.5" y="172.9" text-anchor="middle">63</text>
+<text class="gain" x="693.5" y="158.9" text-anchor="middle">+16%</text>
 <text class="l" x="672.0" y="328" text-anchor="middle">128K</text>
 <rect class="s0" x="60" y="350" width="12" height="12" rx="2"/>
 <text class="l" x="78" y="360">stock 1.1.0</text>
