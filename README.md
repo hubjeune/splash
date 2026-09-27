@@ -1,299 +1,342 @@
 # Splish
 
-> **An unofficial fork of [Inco's Splash](https://github.com/incoai/splash), tuned for Apple
-> M5 GPUs. Not affiliated with Inco.** On a 40-core M5 Max it serves Qwen3.8-27B-family models
-> 31–48% faster than stock on long reasoning, Qwen3.6-35B-A3B 18–22% faster at 2–4 requests,
-> and whole-file code edits 24–42% faster with a copy rule. Quality is unchanged.
->
-> **[Results, method, what did not work, and how to run it →](docs/m5/README.md)**
->
-> Everything below is upstream Splash's own README, unchanged. Its Homebrew install gives you
-> Inco's Splash, not Splish; build Splish from source ([quick start](docs/m5/README.md#quick-start)).
+Splish is an **unofficial** fork of [Inco's Splash](https://github.com/incoai/splash), not
+affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **M5**-family
+GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB).
 
----
+What the fork adds on top of Splash 1.1.0:
 
-# Splash
+- **Faster decode for Qwen3.8-27B-family models.** New split-K verify kernels
+  (`SplitSums32`) and measured kernel choices for the 27B shapes. On Inco's own
+  Qwen3.8-27B package it is **31–48% faster than stock** on long reasoning at 1–4 concurrent
+  requests, and 15–37% on short 512-token answers. It also uses less energy per token at
+  3–4 requests. Quality is unchanged at 95/95.
+- **Qwen3.6-35B-A3B tuned.** The same kernels, with choices from Splash's own tuner, serve
+  Inco's 35B **18–22% faster at 2–4 requests** (+5% at one). Quality 95/95.
+- **A copy rule for coding agents** (from [TensorFold](https://github.com/ashhart/TensorFold)).
+  When the last 16+ tokens repeat earlier context, the next draft is the verbatim
+  continuation. Whole-file edits run **24–42% faster**; everything else is within ±3%. Output
+  is exact: greedy text is byte-identical, and sampled acceptance uses a one-hot draft
+  distribution.
+- **Kernel choices from a file** (`SPLASH_KERNEL_CHOICES`), so a device can be retuned without
+  a rebuild. The same mechanism covers GGUF (block-quantized) decode.
+- **Tools that keep the numbers honest.** They include a kernel bench checked against fp64, a
+  whole-step benchmark with confidence intervals, bit-for-bit build comparison and a
+  steady-state serving benchmark with power readings.
 
-[![CI](https://github.com/incoai/splash/actions/workflows/ci.yml/badge.svg)](https://github.com/incoai/splash/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Apple%20silicon-black.svg)](#quick-start)
+**It is not faster everywhere.** Most of the single-request gain on a 27B comes from measured
+kernel choices, which Splash's own `tune-kernels` tool can also produce for its built-in
+kernels. The fork's own kernels pay off mainly at 2–4 concurrent requests. Long-context decode (past ~40K tokens) is limited by
+attention, and nothing here moved it measurably. On GGUF models the gains are small (~2%).
+[Where stock is ahead or even](#where-stock-is-ahead-or-even) lists these cases.
 
-**A local inference engine for Apple silicon, built around the model.**
+Everything else is Inco's: the engine, the package format, the models and draft models, and
+the server. The fork tracks upstream releases deliberately (currently Splash 1.1.0; the
+`upstream` remote).
 
-Splash serves a small set of models to coding agents and to any OpenAI or
-Anthropic compatible client, on one Mac. On a 48 GB M5 Pro, Splash 1.0 decoded
-Qwen3.8-27B at 2× the speed of the next-fastest engine we measured and, with a
-32K context cached, returned the first token in 282 ms
-([Performance](#performance)). Its kernels, draft model, and memory
-plan are specialized for each model it serves. That is why it is fast, and why
-there is nothing to configure.
+- [Quick start](#quick-start)
+- [Recommended settings](#recommended-settings)
+- [Versus stock Splash](#versus-stock-splash)
+- [What worked](#what-worked)
+- [What did not](#what-did-not)
+- [Ideas left to try](#ideas-left-to-try)
+- [Benchmarks and tuning](#benchmarks-and-tuning)
+- [Credits](#credits)
+- [License](#license)
+- [Support](#support)
 
 ## Quick start
 
-Apple M3 or newer, macOS 26.4 or later, [Homebrew](https://brew.sh), 36 GB
-of unified memory (48 GB or more recommended), and free disk for the model,
-its draft and a prepared copy of their weights (up to about 40 GB in total for
-Qwen3.8-27B and 48 GB for Qwen3.6-35B-A3B). Macs with 24 GB run the smaller
-GGUF files: on a 24 GB M6 (12-core GPU), `unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS`
-with its DFlash2 draft advertises a 102,393-token context and decodes code at
-43.5 tok/s, and `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q2_K_XL` advertises the full
-256K context and decodes at about 100 tok/s. Where memory cannot hold a long
-context, startup suggests `--max-cache-disk`.
+**Requirements.** An Apple silicon Mac that Splash supports (M3 or newer), macOS 26.4+, Xcode 26
+or newer with a Metal 4 toolchain, and Python 3.12–3.14. The gains need an **M5-family GPU**. The
+choices files here are tuned on a 40-core M5 Max; on other M5 chips, retune with the tuner
+(see [Benchmarks and tuning](#benchmarks-and-tuning)). Memory needs are Splash's
+([upstream README](docs/UPSTREAM_README.md#quick-start)).
 
-```bash
-brew install incoai/tap/splash
-splash serve --model mlx-community/Qwen3.8-27B-4bit
+**Build.**
+
+```sh
+git clone https://github.com/publicExcess/splish.git
+cd splish
+make -j4
 ```
 
-The first run checks that the Mac's GPU and macOS are supported, downloads the
-model and its matching DFlash2 draft, prepares weights for the Metal kernels,
-checks available memory, and starts serving on `127.0.0.1:8000`. Later starts
-reuse the prepared weights.
+**Run.** `./splash serve` sets up its Python dependencies, downloads the model and its DFlash2
+draft, and prepares the weights on first use, as in upstream Splash. Point it at the choices file
+for your model:
 
-Once it prints `Ready`, leave this terminal open. Open <http://127.0.0.1:8000>
-in your browser, or run an installed coding agent from another terminal:
+```sh
+# Qwen3.8-27B family: Inco's package, mlx-community/Qwen3.8-27B-4bit, fine-tunes such as Swift-1.5
+SPLASH_KERNEL_CHOICES=tuning/m5max-40c-swift15-v8.choices \
+SPLASH_M5_COPY_MIN_MATCH=16 \
+  ./splash serve --model mlx-community/Qwen3.8-27B-4bit
 
-```bash
-splash opencode    # or: splash claude / splash codex / splash hermes / splash pi
+# Qwen3.6-35B-A3B
+SPLASH_KERNEL_CHOICES=tuning/m5max-40c-qwen36-35b.choices \
+  ./splash serve --model incoai/Qwen3.6-35B-A3B-Splash
 ```
 
-`splash pi` adds a `splash` provider to Pi's `models.json` (`splash-<port>` for
-a server on another port) and leaves Pi's other providers, settings and
-sessions alone.
+The log says `Installed supplied kernel choices.` when the file loads. Everything else (the
+OpenAI- and Anthropic-compatible API, `./splash opencode|claude|codex|hermes|pi`, context and
+memory options) is upstream Splash's; see [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md) and
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
-Press Ctrl+C in the server terminal to stop Splash.
+| Variable | Effect |
+|---|---|
+| `SPLASH_KERNEL_CHOICES=FILE` | Load measured kernel choices ([tuning/](tuning/)); unset, Splash's defaults |
+| `SPLASH_M5_COPY_MIN_MATCH=N` | Copy rule: draft verbatim continuations of N+ repeated tokens (16 recommended; 0 or unset: off) |
+| `SPLASH_M5_ACCEPT_LOG`, `SPLASH_M5_TOKEN_LOG` | Diagnostics: acceptance histogram and per-step tokens (see below) |
 
-## Use the API
+## Recommended settings
 
-Splash speaks OpenAI Chat Completions (`/v1/chat/completions`), OpenAI Responses
-(`/v1/responses`), and Anthropic Messages (`/v1/messages`), all with streaming,
-tool calls, JSON Schema output, images, and inline PDFs. `/tokenize` and
-`/apply-template` return token IDs and the rendered prompt without running the
-model.
+| Model | Choices file | Notes |
+|---|---|---|
+| Qwen3.8-27B family, Splash package (Inco's, Swift-1.5, other fine-tunes) | `tuning/m5max-40c-swift15-v8.choices` | Tuned on a 40-core M5 Max. Other M5 chips: run the tuner (`dev/tuning`). |
+| Qwen3.8-27B GGUF Q8_0 | `tuning/m5max-40c-swift15-q80.choices` | ~2% |
+| Qwen3.6-35B-A3B | `tuning/m5max-40c-qwen36-35b.choices` | +5/+18/+22/+18% at 1–4 requests |
+| Qwen3.8-27B GGUF Q4_K_M, Q6_K | `tuning/m5max-40c-swift15-kquant.choices` | ~2% (the G4a kernel does the work) |
 
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "mlx-community/Qwen3.8-27B-4bit",
-    "messages": [{"role": "user", "content": "Explain speculative decoding in one sentence."}]
-  }'
+**Copy rule:** set `SPLASH_M5_COPY_MIN_MATCH=16` (0 or unset: off). It pays off on agents that
+rewrite files. It never triggers on prose and costs at most ~3% when it misfires.
+
+Draft length: keep Splash's 7 drafted tokens. On the long-reasoning load 50–62% of verify
+steps accept all 7 (45–48% on Qwen3.6-35B). A draft cut to 5 keeps only ~81% of the tokens
+per step, more than a shorter verify could save.
+
+Heat: sustained 3–4-request load peaked at 92–94 °C GPU on both engines, with the default fan
+behaviour. For long agent sessions, set a fan curve that reaches full speed by 80–85 °C.
+
+## Versus stock Splash
+
+**Method.**
+- **Builds.** Stock is vanilla Splash 1.1.0. The fork is this repository with the v8
+  choices. Both ran on the same M5 Max with the same packages, side by side on separate
+  ports.
+- **Serving load.** C concurrent requests (C = 1–4), each generating up to 4,096 tokens
+  from a long-reasoning prompt with the recommended sampling (temperature 1.0, top_p 0.95,
+  top_k 20).
+- **Metric.** Aggregate decode tok/s, counted only while all C requests decode
+  (`dev/m5/serve_bench.py`). Package power and GPU temperature come from `macmon` over the
+  same window.
+- **Repeats.** Each value is the mean of two rounds, with stock and fork alternating. Runs
+  vary by up to ~7% (single cells up to 8%), so **differences under about 5% are ties**.
+- **Splash's own harness.** `dev/benchmarks/http_regression.py` (ABBA order, `abba.py`'s
+  pass rule) measured decode ms per token and time to first token at 2K and 32K context.
+- **Quality.** A 95-task set (maths, code, reasoning, exact-match scoring) on both builds.
+
+**Which build.** The long-reasoning, quality and harness numbers (2026-09-26 overnight) use
+the current build, G4a and A4 included. The 512-token rows and Swift's step times predate
+G4a and A4. Both changes are bit-identical and affect GGUF models and long context only.
+
+### Where Splish leads
+
+Inco's Qwen3.8-27B package (`incoai/Qwen3.8-27B-Splash`), aggregate tok/s, fork and change
+against stock:
+
+| Load | C=1 | C=2 | C=3 | C=4 |
+|---|---:|---:|---:|---:|
+| Greedy, 512 tokens | 98.8 **+26%** | 163.9 **+23%** | 170.8 **+24%** | 209.7 **+15%** |
+| Sampled, 512 tokens | 90.5 **+23%** | 151.3 **+28%** | 171.2 **+37%** | 208.6 **+28%** |
+| **64K-token document, summarise, steady state** | 73.4 **+12%** | 118.2 **+24%** | | |
+| **Long reasoning, steady state, sampled** | 177.7 **+35%** | 292.0 **+31%** | 329.5 **+48%** | 391.8 **+31%** |
+| Energy per token, J (stock → fork) | 0.65 → 0.36 | 0.24 → 0.30 | 0.25 → 0.22 | 0.21 → 0.19 |
+
+![Long reasoning, steady state](docs/m5/charts/steady-state.svg)
+
+![Inco's Qwen3.8-27B, stock vs Splish, greedy](docs/m5/charts/official-27b-concurrency.svg)
+![Inco's Qwen3.8-27B, stock vs Splish, sampled](docs/m5/charts/official-27b-concurrency-sampled.svg)
+
+Stock for reference: greedy 78.2 / 133.7 / 137.8 / 182.6 tok/s, sampled 73.8 / 118.2 /
+124.9 / 163.4, and long reasoning 131.3 / 223.2 / 222.2 / 299.0. Long-reasoning maths drafts
+very well (about 6.2 tokens per verify step), which is why its tok/s are higher than the
+short answers'.
+
+Swift-1.5 on the same long-reasoning load: 140.5 / 224.2 / 224.1 / 287.7 → **179.0 / 295.8 /
+341.5 / 400.2** tok/s (+27% / +32% / +52% / +39%). Energy at 4 requests is 0.32 → 0.18 J per
+token.
+
+**TensorFold's client** (`tools/bench_openai.py` from
+[ashhart/TensorFold](https://github.com/ashhart/TensorFold), via `dev/m5/tensorfold_bench.py`;
+64-token replies, 5 seeds, 2 rounds). Code and chat, sampled and greedy, tok/s:
+
+| | Code, sampled | Chat, sampled | Code, greedy | Chat, greedy |
+|---|---:|---:|---:|---:|
+| Stock Splash 1.1.0 | 156.6 | 77.8 | 142.1 | 75.1 |
+| **Splish** | **202.6** | **88.6** | **176.1** | **91.9** |
+| TensorFold 0.3.4, as published for an M5 Max | 168.4 | 69.3 | 154.7 | 73.5 |
+
+The TensorFold row is its own published measurement: a different checkpoint and drafter, a
+raw-completion code prompt, and a different session. Treat it as a reference point, not a race.
+
+**Splash's own harness** (`http_regression.py`, ABBA, Inco's pass rule) on Inco's 27B: decode
+**5.93 → 4.60 ms per token (−22%), pass**. Time to first token is identical at 32K
+(39.5 s vs 39.4 s). At 2K it is +0.7%, but that run's spread was 6.9%, above the rule's 5%
+limit, so the rule calls it inconclusive rather than a regression.
+
+Swift-1.5 (a Qwen3.8-27B fine-tune, same shapes), decode step time from Splash's
+`decode_profile` with a 2,048-token prompt:
+
+![Swift-1.5 decode step time](docs/m5/charts/swift-step-time.svg)
+
+| Requests | Stock 1.0.2 | 1.0.2 + tuned choices | Splish (v8) |
+|---|---:|---:|---:|
+| 1 | 49.0 ms | 41.5 ms | **40.5 ms** |
+| 2 | 59.1 ms | 59.4 ms | **44.9 ms** |
+| 3 | 87.2 ms | 88.2 ms | **59.3 ms** |
+| 4 | 87.0 ms | 85.8 ms | **62.9 ms** |
+
+At one request the fork adds ~2.5% over tuned choices alone. The gain from the fork's own
+kernels is at 2–4 requests (1.3–1.5×).
+
+**Quality.** Swift-1.5 scores 95/95 on both engines, and 380/380 with four copies running
+concurrently. On Inco's 27B: stock 95/95, fork 95/95. The fork's greedy text
+differs from stock at near-ties because the split-K kernels add in a different order. Both
+engines are deterministic run to run.
+
+### Where stock is ahead or even
+
+| Case | Result |
+|---|---|
+| Speculative acceptance, Inco's 27B | Fork 0.380 vs stock 0.398 (greedy, 16 prompts). Slightly lower; the speed gain covers it. |
+| Long-context decode (40K+) | Tie. Attention sets the limit, and the one change kept (A4) is ~3% of attention and not visible per step. |
+| GGUF Q8_0 decode, 2 requests | Tie (−0.1%). 1, 3 and 4 requests: ~2% faster. |
+| Qwen3.6-35B-A3B (tuning) | Not tuned. The fork's attention change is disabled for its shape, where it was 3% slower. |
+| Time to first token, 2K / 32K | Tie (+0.7% / −0.2%). The 2K run was too noisy for Inco's rule to pass it. |
+| Qwen3.6-35B-A3B, long reasoning, 1–4 requests | Tie: −2% / −1% / −4% / +2%, inside its 5–7% run spread. |
+
+## What worked
+
+1. **Split-K verify kernels with row sums computed once (`SplitSums32`)** on the MPP tensor
+   units. The residual, plain and gate/up projections gained at 16–32 rows, which cut the
+   step 23–32% at 2–4 requests.
+2. **Lighter barriers (H1).** A simdgroup barrier replaces a threadgroup one where a tile
+   has one simdgroup.
+3. **Measured choices per shape** (`v8`), loaded from a file.
+4. **GGUF input prefetch (G4a).** The staged GGUF tile now prefetches its input rows a step
+   ahead into space freed from its weight stage. It uses the same threadgroup memory,
+   produces bit-identical output and is 2–8% faster at 32 rows.
+
+   ![GGUF Q8_0 at 32 rows](docs/m5/charts/gguf-g4a.svg)
+5. **Attention QK on 4 simdgroups for 6-head groups (A4).** Bit-identical; attention 2–3%
+   faster.
+6. **Tuning a second model with the same kernels.** Splash's `tune-kernels` on Qwen3.6-35B-A3B
+   picked 31 `SplitSums32` choices for its dense projections. They were fp64- and race-checked
+   on its shapes. Serving is +5/+18/+22/+18% at 1–4 requests.
+7. **The copy rule** (TensorFold's). Measured before it was built: a replay of real
+   transcripts (`SPLASH_M5_TOKEN_LOG`, `dev/m5/copy_rule.py`) predicted +26% / +42% on two
+   whole-file edits; live it gave +24% / +42%. The first build rejected every copy. The engine
+   emits each step's anchor token first, so the copy was one token early; a debug log
+   (`SPLASH_M5_COPY_DEBUG`) found it.
+
+   | Swift-1.5, greedy, prompts cached | off | on |
+   |---|---:|---:|
+   | Whole-file edit (type hints), tok/s | 144.4 | **179.7** |
+   | Whole-file edit (docstrings), tok/s | 136.3 | **194.2** |
+   | Short rename, tok/s | 197.8 | 196.4 |
+   | Prose / reasoning | | −0.4 to −0.7% |
+   | Steps accepting all 7 drafts | 28% | 45% |
+
+## What did not
+
+The full log, with numbers, is in [FORK.md](FORK.md).
+
+| Idea | Result | Why |
+|---|---|---|
+| Epilogue redesigns (bias matmul, early loads, shuffles, cache) | No gain | The 32-row matmul is compute-bound at ~57 TFLOPS. |
+| Kernel fusion | −0.1% | Launch cost is not the gap. |
+| Concurrent encoder | 0.6–2.9% slower | Decode is a dependency chain. |
+| Attention: operand swap (A1) | Wrong output | Discarded. |
+| Attention: two pages per step (A2), next-page prefetch (A3) | 0%, −2% | Not latency-bound. |
+| Attention: int8 × int8 QK (A6) | 3–7% slower, 3× the error | The M5 tensor unit is no faster at int8 for this shape. |
+| GGUF: extra threadgroup memory (G1) or registers (G2) for prefetch | 17–35% slower | The tile's occupancy collapses above 8 KB. |
+
+![Long-context attention probes](docs/m5/charts/attention-probes.svg)
+
+**Findings that should transfer to other M5 work:**
+- Verify attention is bound by the tensor unit's bf16 × int8 matmuls. The softmax between
+  them is serialized.
+- The GGUF staged tile's speed depends on its threadgroup-memory footprint. Doubling it
+  cost 30–38%.
+- MPP's `relaxed_precision` flag had no measurable effect on bf16 × int8 QK.
+
+## Ideas left to try
+
+1. **Attention rewrite.** Overlap one threadgroup's softmax with another's matmul (a
+   producer/consumer layout). It is the only lever left for long context.
+2. **Draft length: tested, keep 7.** Acceptance histograms (`SPLASH_M5_ACCEPT_LOG`,
+   `dev/m5/accept_hist.py`) show 50–62% of steps accepting every drafted token. A shorter
+   draft loses more tokens than a shorter verify saves. ninfer-ext's gain from K=5 on CUDA
+   does not transfer here.
+3. **Long context beyond 64K.** At 64K the fork holds its lead (+12% / +24% at 1 / 2
+   requests). The absolute slowdown with context is attention (idea 1).
+4. **A better draft model for Swift.** Swift runs Inco's base-model draft. On maths reasoning
+   it already accepts as well on Swift as on the base model (~6.3 tokens per step).
+   TensorFold reports that fine-tuning DFlash2 on 372K target tokens gave no gain, and that
+   the limit is the drafter's candidates. The promising route is distillation from the
+   target's top-k logits at scale. Cloud compute for this is what [Support](#support) is for.
+5. **Draft trees** (from TensorFold). Verify a small best-first tree instead of one chain
+   (+28% tokens per pass on code there). Our estimate is smaller: +5–15% at one request on
+   prose and chat, because Splash's chain already accepts all 7 drafts in about half of
+   steps. It is a large engine change (per-node DeltaNet state, tree attention masks), so the
+   next step is to measure it from the drafter's candidate lattice first.
+6. **Draft vocabulary** (from TensorFold). 99.64% of generated tokens have ids below 98,304, so
+   the draft's head could read 40% of the vocabulary. Output is unchanged, because
+   verification still reads all of it.
+7. **Batch width 8.** Splash caps concurrent decode at 4; a plan for 8 exists but is unbuilt.
+8. **Other GGUF formats.** G4a is measured on Q8_0, Q4_K and Q6_K (bit-identical, +3–14% per
+   kernel, ~2% per step); the IQ and Q2/Q3/Q5 formats are unmeasured.
+9. **Token-agreement check.** Compare next-token choices position by position against
+   upstream, as the M1 port does. It is a finer quality gate than a task set.
+10. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max.
+
+## Benchmarks and tuning
+
+Every number above can be re-measured with the tools in [dev/m5/](dev/m5/). The full log of
+hypotheses, measurements and dead ends is in [FORK.md](FORK.md).
+
+| Tool | What it measures |
+|---|---|
+| `dev/m5/build.sh`, then `build/m5/kernel-bench` | One projection, every planner candidate, timed and checked against fp64 (`--check`), affine or GGUF (`--gguf q80\|q4k\|q6k`), on the Qwen3.8-27B and Qwen3.6-35B shapes |
+| `dev/m5/step_bench.py` | A whole decode step at 1–4 requests (Splash's `decode_profile`), alternating builds or choices files, with 95% intervals |
+| `dev/m5/serve_bench.py` | Serving steady state: C concurrent long generations, only while all C decode, with package power and GPU temperature (macmon) |
+| `dev/benchmarks/http_regression.py` | Splash's own ABBA harness and pass rule (`SPLASH_M5_ALLOW_TRANSCRIPT_DIFF=1` when builds differ at near-ties) |
+| `dev/m5/tensorfold_bench.py` | [TensorFold](https://github.com/ashhart/TensorFold)'s single-stream client, unmodified, against a Splash server |
+| `dev/m5/attn_compare.py`, `dev/m5/variant_lib.sh` | A kernel variant (Metal defines) against production, with output agreement |
+| `dev/m5/accept_hist.py`, `dev/m5/copy_rule.py` | Draft acceptance histograms and the copy-rule replay, from the diagnostic logs |
+| `dev/m5/tonight.sh` | The overnight run: serving, quality, harness, 64K, Qwen3.6-35B |
+| `build/engine-tests/tune-kernels METALLIB MODEL_ROOT` | Splash's tuner; its winners become a choices file |
+
+```sh
+make && dev/m5/build.sh
+./build/m5/kernel-bench build/splash.metallib --check                  # affine Q4, fp64
+./build/m5/kernel-bench build/splash.metallib --gguf q80 --check       # GGUF Q8_0
+SPLISH_PACKAGE=<model root> python3 dev/m5/step_bench.py base=- new=tuning/m5max-40c-swift15-v8.choices
+python3 dev/m5/charts.py                                                # docs/m5/charts
 ```
 
-`model` is optional. If set, use the served model ID or a configured
-[model alias](DEVELOPMENT.md#api-model-aliases).
-Reasoning follows the model default unless a [server default](DEVELOPMENT.md#default-reasoning-effort)
-is configured. `"reasoning_effort": "none"` turns it off, and
-Qwen3.8-27B also takes `low`, `medium`, and `xhigh`.
+## Credits
 
-`/v1/judgments` and `/v1/systemone` provide scoring without generation.
-See [judgment contracts](DEVELOPMENT.md#judgment-contracts) for details.
+- **[Inco](https://github.com/incoai/splash)** built Splash, its models and its DFlash draft
+  models. This fork only changes kernels and tuning.
+- **SnooPredictions515**, whose M1 port and write-up
+  ([r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/comments/1wmbbf9/splash_engine_qwen3827b_in_native_8bit_at_3755/))
+  suggested the attention and quality-agreement experiments we ran.
+- **[giveen/ninfer-ext](https://github.com/giveen/ninfer-ext)** for the reporting layout this
+  write-up follows: method first, and losses next to wins.
+- **[ashhart/TensorFold](https://github.com/ashhart/TensorFold)** for its benchmark client and a
+  detailed recipe for the same model on the same chip. Its draft trees, copy rule and draft
+  vocabulary are on our list, and its negative results saved us time.
 
-## Models
+## Support
 
-| Base model | MLX affine example | GGUF example |
-| --- | --- | --- |
-| Qwen3.8-27B | `mlx-community/Qwen3.8-27B-4bit` | `unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M` |
-| Qwen3.6-35B-A3B | `mlx-community/Qwen3.6-35B-A3B-4bit` | `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M` |
+If this is useful and you would like to help, the next compute-heavy step is a better draft
+model for Swift. [TensorFold](https://github.com/ashhart/TensorFold) found that a plain
+fine-tune of DFlash2 on the target's tokens did not help. So the plan is distillation from the
+target's own top-k logits at scale, which needs rented GPUs:
+[ko-fi.com/severalviolins](https://ko-fi.com/severalviolins).
 
-`--model` accepts the upstream repository directly: an MLX affine 4-bit,
-group-64 checkpoint (such as the mlx-community `-4bit` conversions) or a GGUF,
-selected with `OWNER/REPO:VARIANT` (for example `:UD-Q4_K_M`). Splash
-identifies the model from its own metadata, its architecture and dimensions,
-before downloading any weights, and pairs the DFlash2 draft trained for it;
-`--draft-model` replaces that draft with another DFlash2 checkpoint, a
-repository or a local directory. The tokenizer, configuration and chat template come
-from the target repository for MLX and from the selected GGUF file itself for
-GGUF, never from another repository: unsupported or incomplete tokenizer
-metadata is an error. GGUF variants whose tensor types Splash cannot load are
-rejected before download. Of Unsloth's files, every one loads for both models,
-from UD-IQ1_S up, except UD-Q8_K_XL and BF16
-([GGUF targets](DEVELOPMENT.md#gguf-targets)). Prism ML's
-`prism-ml/Ternary-Bonsai-2-27B-gguf:PQ2_0`, a Qwen3.8-27B target, loads as well,
-with its input rotation and vision projector. Legacy Splash packages such as
-`incoai/Qwen3.8-27B-Splash` remain loadable.
+## License
 
-Vision comes from the same source: embedded vision tensors for MLX, or the
-repository's companion BF16 or F32 `mmproj` GGUF. Both are prepared as
-BF16; an F32 or F16 tensor loads only when every value is exactly a BF16, as in
-Unsloth's mmproj files.
-Use `--language-only` to skip vision loading and preparation. It also skips the
-GGUF mmproj download; MLX vision tensors share the language model's shards, so
-those shards still download in full. The server then rejects image and PDF input
-and reports `vision: false` in `/status` and `/v1/models`.
-
-The prepared weights live in `~/Library/Caches/Splash/weights`
-(`SPLASH_WEIGHT_CACHE` relocates them); preparation uses bounded temporary
-memory, and later starts reuse the result. Each start checks the upstream
-revisions of the model and of its draft, with one Hub request each of at most
-5 seconds, and installs a new commit before serving it; without the Hub, or
-when the new commit cannot be installed, the installed model starts.
-`--revision` selects an upstream branch, tag or commit of the model (a commit
-is never checked again, nor is its draft); otherwise the default branch is
-followed. Private repositories need `HF_TOKEN`. Downloads use the Hugging Face
-cache, and `brew upgrade splash` preserves models and agent sessions.
-
-For LM Studio Bionic, follow its [Splash setup guide](https://lmstudio.ai/blog/splash-engine):
-install the Splash runtime, then paste the full Hugging Face model link into its
-model search. These integrations manage their own runtime and settings.
-
-If a client’s model catalog does not list a model, the full model ID in
-this table still works with `splash serve --model OWNER/REPO[:VARIANT]`. The browser chat
-and the agent launchers connect to that server without a catalog search.
-
-For a custom model download location, see [model cache](DEVELOPMENT.md#model-cache).
-
-## Settings
-
-There is no config file. The server binds `127.0.0.1:8000` by default.
-Context supports up to the model’s native 256K window; usable capacity
-depends on available memory. `splash serve --help` lists server options and examples.
-The startup summary and `maximum_context_tokens` in `/status` show the effective
-server limit. `/v1/models` and `/v1/models/{id}` report the same limit as
-`max_model_len` and its compatibility alias `context_length`, including model aliases.
-Clients can impose a smaller limit. With enough memory,
-request the full window using `--max-context 256K`. This is a capacity limit, not a guarantee
-that a long uncached prompt will reach its first token quickly.
-
-`splash serve` accepts these optional flags:
-
-- `--revision`: upstream branch, tag or commit. Default: the default branch.
-- `--draft-model`: another DFlash2 draft, a repository or local directory.
-  Default: the draft trained for the model.
-- `--language-only`: skip vision; image and PDF input is then rejected.
-- `--host`: HTTP bind address. Default: `127.0.0.1`. Clients connect by IP
-  address or `localhost`; other names need `--allowed-host`.
-- `--port`: HTTP port. Defaults to `SPLASH_PORT` or `8000`.
-- `--max-memory`: ceiling on Metal allocations, e.g. `28G`. Default: auto.
-- `--max-context`: context limit, up to `256K`, e.g. `100K`. Default: auto.
-- `--max-cache-disk`: SSD tier for the cache, e.g. `5G`. Default: 0 (off).
-  Startup suggests it when memory cannot hold the context; with it, a long
-  request that runs out of memory keeps its progress on SSD and replays far
-  less of its prompt.
-- `--kv-format`: target KV cache storage, `int8` (default) or `bf16`.
-- `--max-image-pixels`: maximum resized pixels per image. Default: 4,194,304.
-- `--allowed-host`: extra HTTP `Host` name to accept, such as `mymac.local`;
-  not a bind address. Repeatable.
-- `--api-key`: require this key on API requests, as a bearer token or
-  `x-api-key`. Defaults to `SPLASH_API_KEY`.
-- `--no-webui`: turn off the chat page.
-
-To use BF16 target KV, select it when starting the server:
-
-```bash
-splash serve --model mlx-community/Qwen3.8-27B-4bit --kv-format bf16
-```
-
-BF16 avoids target KV quantization, uses approximately twice the target KV
-memory, and can be slower at long contexts. Model weights are unchanged.
-Restart the server to switch formats. Omit `--kv-format` or use
-`--kv-format int8` for the default INT8 cache.
-
-If the model does not fit in the memory available, startup prints a memory
-budget breakdown and stops.
-
-`--max-cache-disk` works with either KV format and preserves its stored bytes
-without further quantization. Disk cache is temporary and does not survive a
-server restart. For disk cache behavior and memory overhead, see
-[disk cache](DEVELOPMENT.md#disk-cache).
-
-Authentication is off by default. Set `SPLASH_API_KEY` in the shell that runs
-`splash serve` and in the shell that runs an agent, and both sides use it.
-Health and readiness probes stay public.
-
-For LAN access and multiple servers, see
-[server configuration](DEVELOPMENT.md#server-configuration).
-
-## Performance
-
-Measured for the Splash 1.0 release (September 2026) on an M5 Pro (16-core
-GPU, 48 GB), serving the Qwen3.8-27B and Qwen3.6-35B-A3B Splash packages:
-selected SPEED-Bench coding prompts over HTTP, a 1,024-token output limit,
-reasoning on (medium for the 27B). The ratio in each cell is against the
-next-fastest engine we measured. The MLX 4-bit models prepare to the packages'
-target weights, byte for byte but for the 27B's 48 per-layer GDN decay vectors,
-each within a float ULP, and decode within 0.5% of them on this M5 Pro
-([upstream loading](dev/benchmarks/upstream-loading.md)). GGUF targets run
-other kernels; [GGUF against llama.cpp](#gguf-against-llamacpp) compares them.
-
-| Metric | Qwen3.6-35B-A3B | Qwen3.8-27B |
-| --- | ---: | ---: |
-| Decode · short prompt | 210 tok/s (1.7×) | 74 tok/s (2.0×) |
-| Prefill · 32K prompt | 2,011 tok/s (1.3×) | 363 tok/s (1.2×) |
-| Cached time to first token · 32K replay | 123 ms (6.6×) | 282 ms (7.3×) |
-| Aggregate decode · 4 concurrent short prompts | 357 tok/s (2.0×) | 170 tok/s (3.9×) |
-
-Splash 1.0 led on every measure at every prompt length we tested, and the lead
-grew with load: 3.8× at four concurrent 32K requests on the 35B. The
-[launch post](https://inco.ai/blog/splash/) has the method and the full
-comparison against oMLX, Lily, uzu, and Ollama.
-
-For repeatable measurements on your Mac, see [local benchmarks](DEVELOPMENT.md#local-benchmarks).
-
-### GGUF against llama.cpp
-
-We compared Splash with llama.cpp (e6ab7c1, Metal) on the same Unsloth
-UD-Q4_K_M files. For accuracy, both read the same text, 16,384 positions of
-prose, code and chat, and at each position we compared the tokens they rank
-first:
-
-| Same token ranked first | Qwen3.8-27B | Qwen3.6-35B-A3B |
-| --- | ---: | ---: |
-| Splash and llama.cpp | 99.30–99.45% | 97.83–98.14% |
-| llama.cpp on the CPU and on Metal | 97.8% | 96.5–96.9% |
-| llama.cpp one token at a time and batched | 99.65–99.75% | 97.95% |
-
-The positions where they differ are near-ties: there, llama.cpp's two best
-tokens are a median 0.03–0.10 nats apart, against 2.6–2.7 nats over all
-positions. Splash's perplexity is 0.1–0.4% (27B) and 0.1–0.9% (35B) above
-llama.cpp's; llama.cpp's CPU backend is 1.7–1.8% above its Metal on the 27B.
-Splash's figures cover an M5 Pro and an M3 Max with `--kv-format bf16`; the
-default INT8 cache gives 99.23–99.25% and 97.92–97.94% on the M5 Pro.
-
-Speed uses the prompts and greedy settings of the table above. llama-server
-runs with its default settings, which do not speculate, and for the 27B also
-with the MTP draft Unsloth ships:
-
-| Decode tok/s | M5 Pro, 20-core GPU | M3 Max, 40-core GPU |
-| --- | ---: | ---: |
-| Qwen3.6-35B-A3B · Splash | 175 | 209 |
-| Qwen3.6-35B-A3B · llama.cpp | 69 | 66 |
-| Qwen3.8-27B · Splash | 74 | 92 |
-| Qwen3.8-27B · llama.cpp | 16 | 17 |
-| Qwen3.8-27B · llama.cpp with MTP | 27 | 20 |
-
-Splash decodes 2.5–3.2× as fast as llama.cpp on the 35B and 4.5–5.3× on
-the 27B (2.7–4.6× against its MTP). Prefilling a 2,048-token chunk, it runs
-at 559 tok/s against 374 on the 27B and 3,662 against 1,968 on the 35B on
-the M5 Pro, and at 245 against 193 and 1,814 against 1,575 on the M3 Max.
-
-## Design
-
-The runtime, scheduler, cache, and API are shared. Everything else is rebuilt
-per model:
-
-- **A draft trained for the model.** Speculative decoding is the decode path in
-  Splash, not an option. Each supported base model has a matching [DFlash
-  2](https://inco.ai/blog/dflash2/) draft, and one pass of the target verifies a
-  block of tokens in parallel.
-- **Kernels for the model's shapes.** Fused Metal kernels for the models'
-  attention, GDN and MoE dimensions, with dispatch policies measured offline
-  per GPU family and core count. MLX weights are prepared once into layouts
-  packed for these kernels. GGUF weights keep their llama.cpp quantization,
-  repacked once into planes that kernels chosen by GPU family, core count and
-  format decode directly, without per-shape tuning. Both are mapped zero-copy
-  from disk. Everything ships precompiled: no Xcode, no compiler toolchain,
-  nothing tuned on your machine.
-- **A memory plan computed for this machine.** Context, KV capacity, and batch
-  limits are worked out at startup from the memory Metal recommends, less the
-  weights, the draft, and each request's state.
-
-The [launch post](https://inco.ai/blog/splash/) covers the design in depth.
-
-## More
-
-- [DEVELOPMENT.md](DEVELOPMENT.md): building from source, model loading, tests
-  and release packaging.
-- Apache-2.0, see [LICENSE](LICENSE); the GGUF kernels include MIT-licensed
-  material from llama.cpp, see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
-  Model weights keep their own licenses.
+Apache 2.0, as Splash ([LICENSE](LICENSE), [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)). Splish's
+changes are marked `splash-m5` in the source and logged in [FORK.md](FORK.md). Splash is Inco's;
+Splish is an independent fork, and Inco does not endorse or support it.
