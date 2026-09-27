@@ -5,7 +5,9 @@ affiliated with Inco. It retunes and extends Splash's Metal kernels for Apple **
 GPUs, and was developed and measured on a 40-core **M5 Max** (128 GB).
 
 **Against Splash 1.1.0 as shipped**, on the same Mac with the same models. Each cell is decode
-tok/s, stock → Splish (gain); at 2–4 requests it is the total across requests. Method in
+tok/s, stock → Splish (gain); at 2–4 requests it is the total across requests. Models are 4-bit
+affine (MLX-style, group 64, the Splash package format) unless marked GGUF, with Splash's default
+int8 KV cache and each model's DFlash2 draft. Method in
 [Versus stock Splash](#versus-stock-splash).
 
 | Workload | 1 request | 2 requests | 3 requests | 4 requests |
