@@ -22,7 +22,7 @@ tok/s, stock → Splish (gain); at 2–4 requests it is the total across request
 On top of that, the copy rule speeds up whole-file code edits (Swift-1.5, Splish without → with
 it): 144 → **180** tok/s (+24%) and 136 → **194** tok/s (+42%).
 
-Quality is unchanged: 95/95 on the same task set, on both engines, for each model above.
+Quality is unchanged: every model above scores 95/95 on our 95-task set with Splish, as stock did wherever we measured it.
 
 What the fork adds on top of Splash 1.1.0:
 
