@@ -172,7 +172,8 @@ against stock:
 | **Long reasoning, steady state, sampled** | 177.7 **+35%** | 292.0 **+31%** | 329.5 **+48%** | 391.8 **+31%** |
 | Energy per token, J (stock → fork) | 0.65 → 0.36 | 0.24 → 0.30 | 0.25 → 0.22 | 0.21 → 0.19 |
 
-![Long reasoning, steady state](docs/m5/charts/steady-state.svg)
+![One request, by model](docs/m5/charts/single-request.svg)
+![1-4 concurrent requests](docs/m5/charts/concurrency.svg)
 
 ![Inco's Qwen3.8-27B, stock vs Splish, greedy](docs/m5/charts/official-27b-concurrency.svg)
 ![Inco's Qwen3.8-27B, stock vs Splish, sampled](docs/m5/charts/official-27b-concurrency-sampled.svg)

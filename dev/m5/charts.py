@@ -78,6 +78,19 @@ def main():
          ["1 request", "2 requests", "3 requests", "4 requests"], ["stock 1.1.0", "Splish"],
          [[73.8, 118.2, 124.9, 163.4], [90.5, 151.3, 171.2, 208.6]], "aggregate tok/s",
          note="temperature 1.0, top_p 0.95, top_k 20", gains=True)
+    # Single request across models and workloads, stock 1.1.0 vs Splish (README headline table).
+    bars("single-request", "One request: stock Splash 1.1.0 vs Splish, by model",
+         ["27B, long reasoning", "27B, short answers", "27B, 128K document", "Swift-1.5, reasoning",
+          "35B-A3B, reasoning"], ["stock 1.1.0", "Splish"],
+         [[131.3, 78.2, 54.0, 140.5, 330.6], [177.7, 98.8, 62.9, 179.0, 348.3]], "decode tok/s",
+         note="27B = Inco's Qwen3.8-27B; 4-bit; 40-core M5 Max", gains=True)
+    # By concurrent requests (the steady-state data, titled for the split).
+    bars("concurrency", "1-4 concurrent requests: stock Splash 1.1.0 vs Splish",
+         ["27B, 1", "27B, 2", "27B, 3", "27B, 4", "Swift, 1", "Swift, 2", "Swift, 3", "Swift, 4"],
+         ["stock 1.1.0", "Splish"],
+         [[131.3, 223.2, 222.2, 299.0, 140.5, 224.2, 224.1, 287.7],
+          [177.7, 292.0, 329.5, 391.8, 179.0, 295.8, 341.5, 400.2]], "total decode tok/s",
+         note="long reasoning; model, requests; mean of 2 rounds", gains=True)
     # Long reasoning, steady state (dev/m5/serve_bench.py, 4,096 tokens, sampled), overnight 2026-09-26.
     bars("steady-state", "Long reasoning, steady state: stock 1.1.0 vs Splish",
          ["27B, 1", "27B, 2", "27B, 3", "27B, 4", "Swift, 1", "Swift, 2", "Swift, 3", "Swift, 4"],
