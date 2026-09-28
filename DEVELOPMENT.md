@@ -1009,6 +1009,7 @@ and `REVISION`, `DRAFT_MODEL` and `LANGUAGE_ONLY=1` as its `--revision`,
 | `verify-models` | the installer's restarts without the Hub, `verify --full`, and the prepared-weight record (`dev/tools/installer_restarts.py`, [Release check](#release-check)) |
 | `test-real` | vision parity with the family's fixture in `dev/tests/fixtures/vision-parity/` when the installation serves vision, and the native model runtime oracle |
 | `test-http-real` | the HTTP frontend on an isolated server (`dev/tests/smoke_real.py`) |
+| `test-power-real` | that `--power 50` decodes byte-identically to `--power 100` on the committed decoding-tie fixtures (`dev/tests/power_identity_real.py`) |
 | `test-agent-real` | the five official clients through `splash serve` (`dev/tests/agent_real.py`), in `AGENT_SCENARIO` `complete` (the default) or `smoke` |
 | `test-release-real` | the HTTP smoke and all five clients on one `splash serve` |
 | `test-performance-real` | the native decode and partial-prefix benchmark, or with `BASELINE` its ABBA comparison with that build (`dev/benchmarks/backend_regression.py`) |
@@ -1083,6 +1084,9 @@ family, so it runs once on each Mac. Per model, `release-check`:
   the installation loads (`verify-models`; a legacy package is only hashed);
 - runs the HTTP smoke, which for a text-only installation checks the 400s
   instead of images (`test-http-real`);
+- checks that `--power 50` leaves greedy decoding byte-identical to
+  `--power 100` on the committed tie fixtures, each power level in a fresh
+  server process (`test-power-real`);
 - compares this build with `BASELINE`, which must have another build
   identity, in ABBA order (`test-performance-real`): output tokens and
   acceptance must be identical (`EXPECT_OUTPUT_CHANGE=1` allows changed

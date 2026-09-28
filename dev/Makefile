@@ -167,6 +167,7 @@ release-check: preflight
 	$(MAKE) --no-print-directory test-real
 	$(MAKE) --no-print-directory verify-models
 	$(MAKE) --no-print-directory test-http-real
+	$(MAKE) --no-print-directory test-power-real
 	$(MAKE) --no-print-directory test-performance-real
 	@test -z "$$(git status --porcelain)" || { \
 		echo "error: release checkout is not clean" >&2; \
