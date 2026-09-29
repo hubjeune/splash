@@ -1,0 +1,53 @@
+#!/bin/sh
+# Splish: ./splash with Splish's defaults. For `serve`, it picks the kernel choices measured
+# for the model (tuning/) when this Mac is the chip they were tuned on (a 40-core M5 Max), and
+# turns on the copy rule. Anything already set wins: SPLASH_KERNEL_CHOICES,
+# SPLASH_M5_COPY_MIN_MATCH (0 turns the copy rule off). SPLISH_CHOICES=any applies the choices
+# on another chip too. Every argument is passed on to ./splash.
+set -eu
+script=$0
+while [ -L "$script" ]; do
+    target=$(readlink -- "$script")
+    case $target in
+        /*) script=$target ;;
+        *) script=$(dirname -- "$script")/$target ;;
+    esac
+done
+ROOT=$(CDPATH= cd -P -- "$(dirname -- "$script")" && pwd -P)
+
+if [ "${1:-}" = serve ]; then
+    model=""
+    previous=""
+    for argument in "$@"; do
+        case $argument in
+            --model=*) model=${argument#--model=} ;;
+        esac
+        [ "$previous" = --model ] && model=$argument
+        previous=$argument
+    done
+    lower=$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')
+    choices=""
+    case $lower in
+        *35b-a3b*) choices=m5max-40c-qwen36-35b.choices ;;
+        *gguf*:q8_0*) choices=m5max-40c-swift15-q80.choices ;;
+        *gguf*:*q4_k*|*gguf*:*q5_k*|*gguf*:*q6_k*) choices=m5max-40c-swift15-kquant.choices ;;
+        *gguf*) choices="" ;;
+        *27b*|*swift*) choices=m5max-40c-swift15-v8.choices ;;
+    esac
+    if [ -z "${SPLASH_KERNEL_CHOICES:-}" ] && [ -n "$choices" ]; then
+        chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)
+        cores=$(system_profiler SPDisplaysDataType 2>/dev/null | sed -n 's/.*Total Number of Cores: *//p' | head -1)
+        if [ "${SPLISH_CHOICES:-}" = any ] || { [ "$chip" = "Apple M5 Max" ] && [ "$cores" = 40 ]; }; then
+            SPLASH_KERNEL_CHOICES="$ROOT/tuning/$choices"
+            export SPLASH_KERNEL_CHOICES
+            echo "splish: kernel choices tuning/$choices" >&2
+        else
+            echo "splish: tuning/$choices was measured on a 40-core M5 Max; this is ${chip:-an unknown chip}" \
+                 "(${cores:-?} GPU cores), so Splash's defaults stay. SPLISH_CHOICES=any tries them anyway." >&2
+        fi
+    fi
+    SPLASH_M5_COPY_MIN_MATCH=${SPLASH_M5_COPY_MIN_MATCH:-16}
+    export SPLASH_M5_COPY_MIN_MATCH
+    [ "$SPLASH_M5_COPY_MIN_MATCH" != 0 ] && echo "splish: copy rule on (${SPLASH_M5_COPY_MIN_MATCH}-token matches)" >&2
+fi
+exec "$ROOT/splash" "$@"

@@ -306,7 +306,11 @@ void allCandidates() {
                       selected.pipeline() == candidate.pipeline() &&
                       selected.threadsPerThreadgroup() == candidate.threadsPerThreadgroup(),
                   "linear candidate configuration/pipeline/scope not selected together");
-          if (candidate.configuration().simdgroups == LinearSimdgroups::Four) {
+          // splash-m5: SplitSums32 is not a drop-in four-simdgroup replacement: it
+          // reads a sums workspace and, for gate/up, adds the two-pass gate scratch.
+          // The requirement below still holds: the installed workspace covers it.
+          if (candidate.configuration().simdgroups == LinearSimdgroups::Four &&
+              candidate.configuration().tile != LinearTile::SplitSums32) {
             const auto original = shipped.linear().plan(w);
             require(selected.storageRows() == original.storageRows() &&
                         selected.sumsBytes() == original.sumsBytes() &&

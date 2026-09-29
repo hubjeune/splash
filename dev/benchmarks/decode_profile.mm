@@ -10,6 +10,7 @@
 // cycle pays in dispatch boundaries rather than kernel work.
 
 #include "engine/Types.hpp"
+#include "KernelChoicesFile.hpp"
 #include "model/Runtime.hpp"
 #include "ops/PageStorage.hpp"
 #include "metal/MetalBackend.hpp"
@@ -217,6 +218,11 @@ int main(int argc, char **argv) {
       model::ModelPackage model = model::loadModelPackage(
           backend, std::filesystem::path(argv[2]));
       ops::ExecutionPlans operators(backend.capabilities());
+      // splash-m5: profile with the same kernel choices the server would install.
+      if (auto choices = m5::kernelChoicesFromEnvironment()) {
+        operators.install(*choices);
+        std::printf("splash-m5: %zu linear kernel choices installed\n", choices->linear.size());
+      }
       model::ModelMemoryPlan executorPlan =
           model::plannedRuntimeMemory(backend.capabilities(), model, operators, format);
 

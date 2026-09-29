@@ -96,8 +96,11 @@ inline void q4_store_input_sums(device const bfloat *input, uint input_size,
 // Simdgroups instance of one tile is bit-identical to the others.
 // The destination's type Out is bf16, or fp32 for a plain projection's
 // logits (ops::Projection::destination), which keeps the sum unrounded.
+// splash-m5: SumsReady (default false) takes input_sums already holding every
+// quant group's row sums, [group][row] for all of K (FORK.md H10/H11).
 template <ushort TileN, bool GateUp, bool AddResidual,
-          ushort StorageN = TileN, bool Pipelined = false, ushort Simdgroups = 8, class Out>
+          ushort StorageN = TileN, bool Pipelined = false, ushort Simdgroups = 8,
+          bool SumsReady = false, class Out>
 inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
                         device bfloat *scales_0, device bfloat *biases_0,
                         device Out *output_0, device uchar *weights_1,
@@ -143,9 +146,10 @@ inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
       accumulated_1[i] = 0.0f;
   });
 
+  if constexpr (!SumsReady)
   q4_store_input_sums<8, Simdgroups>(input, input_size, 0, input_sums, 0,
                                      simd_lane, simd_group);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if constexpr (!SumsReady) threadgroup_barrier(mem_flags::mem_threadgroup);
   auto run_group = [&](uint quant_group,
                        thread decltype(accumulated_0) &partial_0,
                        thread decltype(accumulated_1) &partial_1) {
@@ -174,7 +178,8 @@ inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
       uint row = index[1];
       ulong parameter = (ulong(tile) * quant_groups + quant_group) * StorageN +
                         tile_offset + index[0];
-      uint sum_offset = ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+      uint sum_offset = SumsReady ? quant_group * 8
+                                  : ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
           input_sums[sum_offset + row] * float(biases_0[parameter]);
@@ -184,7 +189,7 @@ inline void q4_mpp_tile(device bfloat *input, device uchar *weights_0,
             input_sums[sum_offset + row] * float(biases_1[parameter]);
       }
     });
-    if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+    if (!SumsReady && (quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
       uint next_group = (quant_group + 1) >> 2;
       q4_store_input_sums<8, Simdgroups>(input, input_size,
                                          quant_group * 64 + 64, input_sums,
@@ -378,8 +383,12 @@ inline void q4_mpp_tile_batched(
 // the single bf16 rounding, cancellation can make the difference exceed one
 // output ulp; qualification needs an operand-magnitude error bound. Instances
 // with the same SplitK retain the same per-element accumulation order.
+// splash-m5: Rows (default 8, one lane) generalises the tile to 16/24/32 verify
+// rows; Rows == 8 instantiations are unchanged.
 template <ushort TileN, bool GateUp, ushort StorageN = TileN,
-          bool Pipelined = true, ushort Simdgroups = 8, ushort SplitK = 4>
+          bool Pipelined = true, ushort Simdgroups = 8, ushort SplitK = 4,
+          ushort Rows = 8, ushort Depth = 2, bool SumsReady = false,
+          ushort Diag = 0, bool DeviceSums = false, ushort EarlyParams = 0>
 inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
                               device bfloat *scales_0, device bfloat *biases_0,
                               threadgroup float *partials,
@@ -387,13 +396,16 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
                               device bfloat *biases_1, uint input_size,
                               threadgroup float *input_sums,
                               uint output_origin, uint simd_lane,
-                              uint simd_group, uint partition) {
-  auto a = tensor(input, dextents<int, 2>{int(input_size), 8},
+                              uint simd_group, uint partition,
+                              device const float *device_sums = nullptr) {
+  // splash-m5 (DeviceSums, needs SumsReady): row sums [group][row] for all of K
+  // are read from device memory (too large for threadgroup memory past 8 rows).
+  auto a = tensor(input, dextents<int, 2>{int(input_size), Rows},
                   array<int, 2>{1, int(input_size)});
   constexpr auto descriptor =
-      matmul2d_descriptor(8, TileN, 64, false, true, false);
+      matmul2d_descriptor(Rows, TileN, 64, false, true, false);
   matmul2d<descriptor, execution_simdgroups<Simdgroups>> operation;
-  auto a0 = a.slice<64, 8>(0, 0);
+  auto a0 = a.slice<64, Rows>(0, 0);
   uint total_quant_groups = input_size / 64;
   uint quant_groups = total_quant_groups / SplitK;
   uint first_group = partition * quant_groups;
@@ -417,10 +429,10 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       decltype(a0), decltype(b00), float>();
   auto accumulated_1 = operation.template get_destination_cooperative_tensor<
       decltype(a0), decltype(b10), float>();
-  // Full 8 x TileN destination and uniform partition capacity, as above.
+  // Full Rows x TileN destination and uniform partition capacity, as above.
   const bool fullyOccupied =
       uint(accumulated_0.get_capacity()) * (uint(Simdgroups) * 32u) ==
-      8u * TileN;
+      uint(Rows) * TileN;
   const auto traversal = fullyOccupied ? Q4Traversal::All
                                        : q4_traversal(accumulated_0);
   q4_visit(accumulated_0, traversal, [&](ushort i) {
@@ -429,20 +441,28 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       accumulated_1[i] = 0.0f;
   });
 
-  q4_store_input_sums<8, Simdgroups>(input, input_size, first_group * 64,
+  // splash-m5 (SumsReady): input_sums already holds every quant group's row sums,
+  // [group][row] for all of K, written once per threadgroup by the caller.
+  if constexpr (!SumsReady && Diag != 4)
+  q4_store_input_sums<Rows, Simdgroups>(input, input_size, first_group * 64,
                                      input_sums, 0, simd_lane, simd_group);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  // splash-m5: a one-simdgroup partition writes and reads only its own sums,
+  // so it need not wait for the other partitions (no lockstep across K ranges).
+  if constexpr (SumsReady) {
+  } else if constexpr (Simdgroups == 1) simdgroup_barrier(mem_flags::mem_threadgroup);
+  else threadgroup_barrier(mem_flags::mem_threadgroup);
   auto run_group = [&](uint quant_group,
                        thread decltype(accumulated_0) &partial_0,
                        thread decltype(accumulated_1) &partial_1) {
     uint input_origin = (first_group + quant_group) * 64;
-    auto a_slice = a.slice<64, 8>(input_origin, 0);
+    auto a_slice = a.slice<64, Rows>(input_origin, 0);
     device uchar *group_weights_0 =
         tile_weights_0 + (ulong(quant_group) * StorageN + tile_offset) * 64 / 2;
     tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b0(
         group_weights_0, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
     auto b0_slice = b0.slice<64, TileN>(0, 0);
-    operation.run(a_slice, b0_slice, partial_0);
+    // splash-m5 diagnostics: Diag 2/3 skip the matmul (no weight reads).
+    if constexpr (Diag != 2 && Diag != 3 && Diag != 4) operation.run(a_slice, b0_slice, partial_0);
     device uchar *group_weights_1 =
         tile_weights_1 + (ulong(quant_group) * StorageN + tile_offset) * 64 / 2;
     tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b1(
@@ -461,7 +481,19 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
       ulong parameter =
           (ulong(tile) * total_quant_groups + first_group + quant_group) *
               StorageN + tile_offset + index[0];
-      uint sum_offset = ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+      uint sum_offset = SumsReady
+          ? (first_group + quant_group) * Rows
+          : ((quant_group >> 2) & 1) * (4 * Rows) + (quant_group & 3) * Rows;
+      // splash-m5 diagnostics: Diag 1/3 drop the scale/bias epilogue (and its loads).
+      if constexpr (Diag == 1 || Diag == 3 || Diag == 4)
+        accumulated_0[i] += (Diag >= 3 ? 0.0f : partial_0[i]) + input_sums[sum_offset + row];
+      else if constexpr (Diag == 5)
+      accumulated_0[i] += partial_0[i] * float(scales_0[parameter]);  // bias added by the caller
+      else if constexpr (DeviceSums)
+      accumulated_0[i] +=
+          partial_0[i] * float(scales_0[parameter]) +
+          device_sums[sum_offset + row] * float(biases_0[parameter]);
+      else
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
           input_sums[sum_offset + row] * float(biases_0[parameter]);
@@ -471,15 +503,104 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
             input_sums[sum_offset + row] * float(biases_1[parameter]);
       }
     });
-    if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+    if (!SumsReady && Diag != 4 && (quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
       uint next_group = (quant_group + 1) >> 2;
-      q4_store_input_sums<8, Simdgroups>(
+      q4_store_input_sums<Rows, Simdgroups>(
           input, input_size, (first_group + quant_group) * 64 + 64, input_sums,
-          (next_group & 1) * 32, simd_lane, simd_group);
-      threadgroup_barrier(mem_flags::mem_threadgroup);
+          (next_group & 1) * (4 * Rows), simd_lane, simd_group);
+      if constexpr (Simdgroups == 1) simdgroup_barrier(mem_flags::mem_threadgroup);
+      else threadgroup_barrier(mem_flags::mem_threadgroup);
     }
   };
-  if constexpr (Pipelined) {
+  if constexpr (EarlyParams) {
+    // splash-m5 (H18): issue each group's scale/bias loads before its matmul, so
+    // their latency overlaps the matmul instead of following it. One lane, no
+    // gate/up; the arithmetic and its order are unchanged (bit-identical).
+    static_assert(Rows == 8 && !GateUp && Simdgroups == 1, "EarlyParams: one-lane plain/residual split");
+    constexpr ushort MaxCap = 32;  // covers partially valid fragments (capacity may exceed 8)
+    auto load_params = [&](uint quant_group, thread float *sc, thread float *bi) {
+      if constexpr (EarlyParams == 2) {
+        // H19: one scale and one bias per lane (column = lane, TileN == 32);
+        // finish_early distributes them with simd_shuffle.
+        static_assert(TileN == 32, "shuffle distribution needs one column per lane");
+        ulong column_parameter = (ulong(tile) * total_quant_groups + first_group + quant_group) *
+                                     StorageN + tile_offset + simd_lane;
+        sc[0] = float(scales_0[column_parameter]);
+        bi[0] = float(biases_0[column_parameter]);
+        return;
+      }
+      q4_visit(accumulated_0, traversal, [&](ushort i) __attribute__((always_inline)) {
+        auto index = accumulated_0.get_multidimensional_index(i);
+        ulong parameter = (ulong(tile) * total_quant_groups + first_group + quant_group) *
+                              StorageN + tile_offset + index[0];
+        sc[i] = float(scales_0[parameter]);
+        bi[i] = float(biases_0[parameter]);
+      });
+    };
+    auto finish_early = [&](uint quant_group, thread decltype(accumulated_0) &partial_0,
+                            thread const float *sc, thread const float *bi) {
+      q4_visit(accumulated_0, traversal, [&](ushort i) __attribute__((always_inline)) {
+        auto index = accumulated_0.get_multidimensional_index(i);
+        uint row = index[1];
+        uint sum_offset = SumsReady
+            ? (first_group + quant_group) * Rows
+            : ((quant_group >> 2) & 1) * (4 * Rows) + (quant_group & 3) * Rows;
+        const float sum = DeviceSums ? device_sums[sum_offset + row] : input_sums[sum_offset + row];
+        const float scale = EarlyParams == 2 ? simd_shuffle(sc[0], ushort(index[0])) : sc[i];
+        const float bias = EarlyParams == 2 ? simd_shuffle(bi[0], ushort(index[0])) : bi[i];
+        accumulated_0[i] += partial_0[i] * scale + sum * bias;
+      });
+      if (!SumsReady && (quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+        uint next_group = (quant_group + 1) >> 2;
+        q4_store_input_sums<Rows, Simdgroups>(
+            input, input_size, (first_group + quant_group) * 64 + 64, input_sums,
+            (next_group & 1) * (4 * Rows), simd_lane, simd_group);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+      }
+    };
+    uint quant_group = 0;
+    for (; quant_group + 1 < quant_groups; quant_group += 2) {
+      decltype(accumulated_0) first_0, second_0;
+      decltype(accumulated_1) first_1, second_1;
+      float sc0[MaxCap], bi0[MaxCap], sc1[MaxCap], bi1[MaxCap];
+      load_params(quant_group, sc0, bi0);
+      run_group(quant_group, first_0, first_1);
+      load_params(quant_group + 1, sc1, bi1);
+      run_group(quant_group + 1, second_0, second_1);
+      finish_early(quant_group, first_0, sc0, bi0);
+      finish_early(quant_group + 1, second_0, sc1, bi1);
+    }
+    if (quant_group < quant_groups) {
+      decltype(accumulated_0) partial_0;
+      decltype(accumulated_1) partial_1;
+      float sc0[MaxCap], bi0[MaxCap];
+      load_params(quant_group, sc0, bi0);
+      run_group(quant_group, partial_0, partial_1);
+      finish_early(quant_group, partial_0, sc0, bi0);
+    }
+  } else   if constexpr (Pipelined && Depth == 4) {
+    // splash-m5: four quant groups' matmuls in flight before their epilogues,
+    // applied in group order (bit-identical to Depth 2 and the sequential form).
+    uint quant_group = 0;
+    for (; quant_group + 3 < quant_groups; quant_group += 4) {
+      decltype(accumulated_0) p0, p1, p2, p3;
+      decltype(accumulated_1) q0, q1, q2, q3;
+      run_group(quant_group, p0, q0);
+      run_group(quant_group + 1, p1, q1);
+      run_group(quant_group + 2, p2, q2);
+      run_group(quant_group + 3, p3, q3);
+      finish_group(quant_group, p0, q0);
+      finish_group(quant_group + 1, p1, q1);
+      finish_group(quant_group + 2, p2, q2);
+      finish_group(quant_group + 3, p3, q3);
+    }
+    for (; quant_group < quant_groups; ++quant_group) {
+      decltype(accumulated_0) partial_0;
+      decltype(accumulated_1) partial_1;
+      run_group(quant_group, partial_0, partial_1);
+      finish_group(quant_group, partial_0, partial_1);
+    }
+  } else if constexpr (Pipelined) {
     uint quant_group = 0;
     for (; quant_group + 1 < quant_groups; quant_group += 2) {
       decltype(accumulated_0) first_0, second_0;
@@ -509,9 +630,9 @@ inline void q4_mpp_tile_split(device bfloat *input, device uchar *weights_0,
   q4_visit(accumulated_0, traversal, [&](ushort i) {
     auto index = accumulated_0.get_multidimensional_index(i);
     uint slot = index[1] * TileN + index[0];
-    partials[partition * 8 * TileN + slot] = accumulated_0[i];
+    partials[partition * Rows * TileN + slot] = accumulated_0[i];
     if constexpr (GateUp)
-      partials[(SplitK + partition) * 8 * TileN + slot] = accumulated_1[i];
+      partials[(SplitK + partition) * Rows * TileN + slot] = accumulated_1[i];
   });
   // The caller's reduction reads every partition's partials, and the next
   // tile's prologue rewrites input-sum region 0; every simdgroup finishes.

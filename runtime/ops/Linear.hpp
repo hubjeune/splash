@@ -56,7 +56,9 @@ enum class LinearEpilogue : uint8_t { None, Residual, GateUp, UpWithGate };
 // register tile on bf16 8x8 matrix operations (Apple9): 64 columns per
 // threadgroup, every request lane in one threadgroup, optional K splits.
 enum class LinearTile : uint8_t {
-  N128, N256, Paired128, Split32, Split64, Paired256, Simdgroup, GgufStaged, GgufRegister
+  N128, N256, Paired128, Split32, Split64, Paired256, Simdgroup, GgufStaged, GgufRegister,
+  // splash-m5: Split32 reading row sums computed once per projection (Linear.cpp).
+  SplitSums32
 };
 // The GGUF formats Apple9's staged tiles decode faster than its register
 // tiles, dense and MoE: IQ3_XXS, the IQ2 formats and IQ1, whose operands the

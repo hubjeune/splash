@@ -304,11 +304,13 @@ void blockTarget() {
   choices.moe.push_back({{shape, 512, MoePhase::Prefill}, {MoeExpertTile::M8}});
   rejects([&] { plans.install(choices); });
   choices.moe.clear();
-  choices.linear.push_back({{{layout.vocabularySize, layout.hiddenSize}, 8, LinearPhase::Decode,
-                             LinearEpilogue::None, WeightLayout::Block32},
-                            plans.linear().plan({{layout.vocabularySize, layout.hiddenSize}, 8, LinearPhase::Decode,
-                                                 LinearEpilogue::None, WeightLayout::Block32})
-                                .configuration()});
+  // splash-m5: block decode choices install (measured GGUF splits); block prefill does not.
+  const LinearWorkload blockDecode{{layout.vocabularySize, layout.hiddenSize}, 8, LinearPhase::Decode,
+                                   LinearEpilogue::None, WeightLayout::Block32};
+  LinearWorkload blockPrefill = blockDecode;
+  blockPrefill.phase = LinearPhase::Prefill;
+  blockPrefill.rows = 512;
+  choices.linear.push_back({blockPrefill, plans.linear().plan(blockDecode).configuration()});
   rejects([&] { plans.install(choices); });
 }
 

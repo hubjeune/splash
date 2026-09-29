@@ -282,6 +282,8 @@ LinearScratchSize Linear::ggufDecodeScratchSize(LinearWorkload w) const {
   const auto [n, k] = w.matrix;
   LinearScratchSize size = LinearPlan(w, baseline(w)).scratchSize();
   if (appleGpuFamily_ == 9) size.include(LinearPlan(w, stagedDecode(n, k, gpuCores_, appleGpuFamily_)).scratchSize());
+  // splash-m5: an installed (tuned) choice may split K further than the baseline.
+  size.include(plan(w).scratchSize());
   return size;
 }
 

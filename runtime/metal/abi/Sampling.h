@@ -47,6 +47,18 @@ struct SelectorBatchParams {
 static_assert(sizeof(SelectorBatchParams) == 44,
               "Draft selector parameters are 44 bytes on both sides");
 
+// splash-m5 copy rule: per lane, the first `lengths[lane]` draft positions are replaced
+// by `tokens[lane * SPLASH_DRAFT_PROPOSAL_TOKENS + position]`, drafted with probability 1.
+struct CopyOverrideParams {
+  uint32_t lanes;
+  uint32_t lengths[SPLASH_MAXIMUM_BATCH_WIDTH];
+  uint32_t tokens[SPLASH_MAXIMUM_BATCH_WIDTH * SPLASH_DRAFT_PROPOSAL_TOKENS];
+};
+
+static_assert(sizeof(CopyOverrideParams) ==
+                  4 * (1 + SPLASH_MAXIMUM_BATCH_WIDTH * (1 + SPLASH_DRAFT_PROPOSAL_TOKENS)),
+              "Copy override parameters match on both sides");
+
 struct VerifyInputBatchParams {
   uint32_t lanes;
   uint32_t vocabulary;

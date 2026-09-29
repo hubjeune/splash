@@ -465,14 +465,27 @@ void planContracts(uint32_t family, uint32_t cores, size_t &widestCandidates) {
           const auto &plan = candidates[index];
           const bool four = plan.configuration().simdgroups == LinearSimdgroups::Four;
           const auto tile = plan.configuration().tile;
-          const bool split = tile == LinearTile::Split32 || tile == LinearTile::Split64;
+          const bool split = tile == LinearTile::Split32 || tile == LinearTile::Split64 ||
+                             tile == LinearTile::SplitSums32;
           if (split) {
             ++splitCandidates;
-            require(lanes == 1 && matrix.inputSize % 1024 == 0 && plan.partialSums() == 4 &&
+            // splash-m5 contract: every split tile runs the full grid over whole
+            // 1024-input blocks. One lane: 4 partitions, or 8/17 for residual N32
+            // (widerSplit); gate/up only as Split32. Two to four lanes: 4
+            // partitions of N32, Split32 plain/residual or SplitSums32
+            // plain/residual/gate-up (the gate/up with its up x SiLU second pass).
+            const uint32_t partitions = plan.partialSums();
+            const bool widened = (partitions == 8 || partitions == 17) && lanes == 1 &&
+                                 epilogue == LinearEpilogue::Residual && tile != LinearTile::Split64;
+            const bool multiLane = lanes > 1 && partitions == 4 && tile != LinearTile::Split64 &&
+                                   (epilogue != LinearEpilogue::GateUp || tile == LinearTile::SplitSums32);
+            const bool oneLane = lanes == 1 && (partitions == 4 || widened) &&
+                                 (epilogue != LinearEpilogue::GateUp || tile == LinearTile::Split32);
+            const bool secondPass = tile == LinearTile::SplitSums32 && epilogue == LinearEpilogue::GateUp;
+            require(matrix.inputSize % 1024 == 0 && (oneLane || multiLane) &&
                         plan.configuration().groups == matrix.outputSize / plan.tileColumns() &&
-                        (epilogue != LinearEpilogue::GateUp || tile == LinearTile::Split32) &&
-                        plan.secondPipeline().empty(),
-                    "split-K candidate escaped its one-lane full-grid contract");
+                        plan.secondPipeline().empty() != secondPass,
+                    "split-K candidate escaped its full-grid contract");
           } else if (plan.usesSimdgroup()) {
             ++simdgroupCandidates;
             require(family == 9 && four &&
@@ -485,21 +498,37 @@ void planContracts(uint32_t family, uint32_t cores, size_t &widestCandidates) {
           if (four) {
             ++fourScopeCandidates;
             const bool oneLane = lanes == 1 &&
-                (tile == LinearTile::Split32 ||
+                (tile == LinearTile::Split32 || tile == LinearTile::SplitSums32 ||
                  (tile == LinearTile::Paired256 && epilogue == LinearEpilogue::None));
+            // splash-m5: the two-to-four-lane N32 split kernels (Split32 plain and
+            // residual; SplitSums32 also gate/up, whose up pass is a second pipeline).
+            const bool multiLaneSplit = lanes > 1 &&
+                (tile == LinearTile::SplitSums32 ||
+                 (tile == LinearTile::Split32 && epilogue != LinearEpilogue::GateUp));
+            const bool secondPass = tile == LinearTile::SplitSums32 && epilogue == LinearEpilogue::GateUp;
             require(((lanes == 3 && tile == LinearTile::N128 && epilogue != LinearEpilogue::GateUp) ||
-                     oneLane || plan.usesSimdgroup()) && plan.secondPipeline().empty(),
+                     oneLane || multiLaneSplit || plan.usesSimdgroup()) &&
+                        plan.secondPipeline().empty() != secondPass,
                     "four-SIMDgroup candidate escaped its precompiled workload set");
-            if (lanes == 3 && !plan.usesSimdgroup())
+            if (lanes == 3 && tile == LinearTile::N128 && !plan.usesSimdgroup())
               require(plan.pipeline() == (epilogue == LinearEpilogue::Residual
                           ? "decode_linear_q4_n128_residual_m24_sg4" : "decode_linear_q4_n128_m24_sg4"),
                       "four-SIMDgroup plan chose the wrong pipeline");
           }
-          require(plan.threadsPerThreadgroup() == (four ? 128 : 256),
+          // splash-m5: one-lane residual splits with 8 or 17 partitions run one
+          // simdgroup per partition.
+          const bool widenedSplit = (tile == LinearTile::Split32 || tile == LinearTile::SplitSums32) &&
+                                    lanes == 1 && plan.configuration().splits > 1;
+          require(plan.threadsPerThreadgroup() ==
+                      (widenedSplit ? plan.configuration().splits * 32 : four ? 128u : 256u),
                   "Linear plan scope/thread count disagree");
           require(plan.storageRows() == lanes * 8 && !plan.sumsBytes() && !plan.downSumsBytes(),
                   "decode storage/sums contract changed");
-          require(plan.gateScratchBytes() == (epilogue == LinearEpilogue::GateUp && lanes >= 3 && !plan.usesSimdgroup()
+          // splash-m5: a gate scratch exists exactly when gate/up is decomposed
+          // into two passes (upstream N256 at three or four lanes; SplitSums32 at
+          // two to four).
+          require(plan.gateScratchBytes() == (epilogue == LinearEpilogue::GateUp && !plan.usesSimdgroup() &&
+                                              !plan.secondPipeline().empty()
                       ? uint64_t{lanes} * 8 * matrix.outputSize * 2 : 0),
                   "decode gate scratch disagrees with decomposition");
           for (size_t prior = 0; prior < index; ++prior)
@@ -511,7 +540,10 @@ void planContracts(uint32_t family, uint32_t cores, size_t &widestCandidates) {
         // epilogue, Split64 for the single-stream ones.
         require((fourScopeCandidates != 0) ==
                     (family == 9 || (lanes == 3 && epilogue != LinearEpilogue::GateUp) ||
-                     (lanes == 1 && (family == 9 || epilogue == LinearEpilogue::None || matrix.inputSize % 1024 == 0))),
+                     (lanes == 1 && (family == 9 || epilogue == LinearEpilogue::None || matrix.inputSize % 1024 == 0)) ||
+                     // splash-m5: the two-to-four-lane split kernels (SplitSums32
+                     // covers plain, residual and gate/up).
+                     (lanes > 1 && matrix.inputSize % 1024 == 0)),
                 "Linear candidate set omitted or added four-SIMDgroup plans");
         uint32_t legalSplits = 0;
         if (family == 9)
@@ -519,8 +551,29 @@ void planContracts(uint32_t family, uint32_t cores, size_t &widestCandidates) {
             legalSplits += matrix.inputSize % (64 * split) == 0;
         require(simdgroupCandidates == legalSplits,
                 "Linear candidates omit a legal Apple9 K split");
-        require(splitCandidates == (lanes == 1 && matrix.inputSize % 1024 == 0
-                                        ? (epilogue == LinearEpilogue::GateUp ? 1U : 2U) : 0U),
+        // splash-m5: upstream's one-lane Split32/Split64, plus one-lane residual
+        // Split32 with 8/17/24 partitions (widerSplit) and SplitSums32 with 4/8/17
+        // (K <= 17408), plus two-to-four-lane Split32 (plain/residual) and
+        // SplitSums32 (plain/residual/gate-up), each at Four and Eight.
+        uint32_t expectedSplits = 0;
+        const bool wholeBlocks = matrix.inputSize % 1024 == 0;
+        const bool residual = epilogue == LinearEpilogue::Residual;
+        const auto divides = [&](uint32_t parts) { return matrix.inputSize % (256 * parts) == 0; };
+        if (lanes == 1 && wholeBlocks) {
+          expectedSplits = epilogue == LinearEpilogue::GateUp ? 1U : 2U;
+          if (residual) {
+            for (uint32_t parts : {8U, 17U, 24U}) expectedSplits += divides(parts);
+            if (matrix.inputSize / 64 <= 272) {
+              ++expectedSplits;
+              for (uint32_t parts : {8U, 17U}) expectedSplits += divides(parts);
+            }
+          }
+        }
+        if (lanes > 1 && wholeBlocks) {
+          if (epilogue == LinearEpilogue::None || residual) expectedSplits += lanes == 2 ? 2 : 1;
+          expectedSplits += 2;  // SplitSums32 covers plain, residual and gate/up
+        }
+        require(splitCandidates == expectedSplits,
                 "Linear candidate set omitted or added split-K plans");
       }
     }
@@ -638,9 +691,31 @@ void planContracts(uint32_t family, uint32_t cores, size_t &widestCandidates) {
   rejects([&] { (void)Linear::plan(splitGateUp, paired256); });
   for (const LinearConfig config : {split32, split64})
     rejects([&] { (void)Linear::plan({{512, 768}, 8}, config); });
-  for (uint32_t rows : {16U, 24U, 32U})
-    for (const LinearConfig config : {split32, split64, paired256})
+  // splash-m5: Split32 also plans two to four lanes (plain and residual, with a
+  // _m{rows} kernel; Eight = two simdgroups per partition); Split64 and
+  // Paired256 remain one-lane only.
+  for (uint32_t rows : {16U, 24U, 32U}) {
+    for (const LinearConfig config : {split64, paired256})
       rejects([&] { (void)Linear::plan({{512, 1024}, rows}, config); });
+    const std::string suffix = "_m" + std::to_string(rows);
+    if (rows == 16) {
+      const auto plain = Linear::plan({{512, 1024}, rows}, split32);
+      const auto residual =
+          Linear::plan({{512, 1024}, rows, LinearPhase::Decode, LinearEpilogue::Residual}, split32);
+      require(plain.pipeline() == "decode_linear_q4_n32_split4" + suffix && plain.threadsPerThreadgroup() == 128 &&
+                  residual.pipeline() == "decode_linear_q4_n32_split4_residual" + suffix &&
+                  plain.partialSums() == 4,
+              "multi-lane Split32 plan geometry or pipeline is wrong");
+    } else {
+      // One simdgroup per partition is not offered at 24/32 rows (not deterministic).
+      rejects([&] { (void)Linear::plan({{512, 1024}, rows}, split32); });
+    }
+    auto eight = split32;
+    eight.simdgroups = LinearSimdgroups::Eight;
+    require(Linear::plan({{512, 1024}, rows}, eight).pipeline() == "decode_linear_q4_n32_split4" + suffix + "_sg8",
+            "multi-lane Split32 Eight pipeline is wrong");
+    rejects([&] { (void)Linear::plan({{512, 1024}, rows, LinearPhase::Decode, LinearEpilogue::GateUp}, split32); });
+  }
   for (const auto tile : {LinearTile::Split32, LinearTile::Split64, LinearTile::Paired256})
     rejects([&] { (void)Linear::plan({{512, 1024}, 32, LinearPhase::Prefill},
         {tile, 0, tile == LinearTile::Split64 ? LinearSimdgroups::Eight : LinearSimdgroups::Four}); });
@@ -1457,12 +1532,17 @@ void numericalCase(metal::MetalBackend &backend, Linear &linear,
     require(last.pipelineName == (plan.secondPipeline().empty() ? plan.pipeline() : plan.secondPipeline()),
             "production dispatch differs from Linear plan");
     for (const auto &dispatch : graph.dispatches().subspan(prepasses))
+      // splash-m5: SplitSums32 begins with its row-sums prepass (its own grid).
+      if (dispatch.pipelineName != "decode_linear_q4_row_sums8" &&
+          dispatch.pipelineName != "decode_linear_q4_row_sums")
       require(dispatch.threadsPerThreadgroup.x == plan.threadsPerThreadgroup() &&
                   dispatch.threadsPerThreadgroup.y == 1 && dispatch.threadsPerThreadgroup.z == 1,
               "production dispatch threads differ from Linear plan scope");
     if (workload.phase == LinearPhase::Decode) {
       const uint32_t lanes = workload.rows / 8;
-      const uint32_t dispatches = plan.usesSimdgroup() ? 2 : plan.secondPipeline().empty() ? 1 : 2;
+      // splash-m5: SplitSums32 adds its row-sums pass.
+      const uint32_t dispatches = (plan.usesSimdgroup() ? 2 : plan.secondPipeline().empty() ? 1 : 2) +
+                                  (plan.configuration().tile == LinearTile::SplitSums32 ? 1 : 0);
       require(last.threadgroups.x == plan.configuration().groups &&
                   graph.dispatches().size() == dispatches,
               "Linear decode plan/graph geometry mismatch");
