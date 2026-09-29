@@ -380,9 +380,12 @@ projector whose weights are BF16, F32 or F16; BF16 is preferred, then F32, then
 F16. The tower runs in BF16 and preparation never rounds a weight: every value
 must be exactly a BF16, which preparation checks tensor by tensor and refuses
 otherwise, naming the tensor and its file. F16 holds ten mantissa bits to
-BF16's seven, so an F16 projector whose values spend them is refused there; one
-whose values are all exactly BF16, such as a projector whose F16 values are
-subnormals, prepares. The processor configuration (MLX
+BF16's seven, so an F16 projector whose values need more precision than BF16
+can hold is refused there. One whose values all fit BF16's significand
+prepares, as ukisai/Swift-1.5-Qwen3.8-27B-GGUF's does: each of its 457,666,560
+F16 values is exactly a BF16. Subnormality alone decides nothing here, since
+512 of the 1023 possible F16 subnormals need a wider significand, so the
+per-value check is the only authority. The processor configuration (MLX
 `preprocessor_config.json`, the GGUF's `clip.vision` metadata) must describe
 the one preprocessing Splash implements (`server/images.py`); it is checked
 before any weight download and not installed.

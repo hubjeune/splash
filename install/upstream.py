@@ -110,10 +110,10 @@ def select_vision(repo):
     that order. The tower runs in BF16 and preparation never rounds a weight:
     every projector value must be exactly a BF16, which preparation checks per
     tensor and refuses otherwise, naming the tensor and its file. F16 holds ten
-    mantissa bits to BF16's seven, so an F16 projector whose values spend them
-    is refused there, while one whose values are all exactly BF16 (its
-    subnormals, for instance) prepares. Each header costs a few range
-    requests."""
+    mantissa bits to BF16's seven, so an F16 projector whose values need more
+    precision than BF16 can hold is refused there, while one whose values all
+    fit BF16's significand prepares, subnormal or not. Each header costs a few
+    range requests."""
     usable, found = {"BF16": [], "F32": [], "F16": []}, []
     for name in filter(_projector_named, _root_ggufs(repo.files)):
         with repo.open(name) as stream:
