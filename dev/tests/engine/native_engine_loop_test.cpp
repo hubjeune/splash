@@ -352,7 +352,12 @@ void testPromptProgress() {
           "cancelled prefill published further progress");
 }
 
-void testPowerSlicesPrefillCommands() {
+// The duty-cycle throttle paces prefill by sleeping at command boundaries, not
+// by reslicing commands: the prefill path's floating-point kernels are not
+// bit-invariant to a command's row budget, so a finer split changes decoded
+// output at decoding ties. Every power level must therefore dispatch exactly
+// the rows power 100 dispatches.
+void testPowerKeepsPrefillDecomposition() {
   const auto prefillCommands = [](uint32_t powerPercent) {
     Backing backing(128);
     KvPool pool(backing);
@@ -380,18 +385,10 @@ void testPowerSlicesPrefillCommands() {
     runUntilIdle(loop);
     return executor.prefillCommandRows;
   };
-  // Power 100 keeps whole-budget commands; a throttled engine crosses many
-  // bounded commands so the command-completion sleep paces the prompt itself.
   const std::vector<uint32_t> unthrottled = prefillCommands(100);
   const std::vector<uint32_t> throttled = prefillCommands(50);
-  require(unthrottled.size() < throttled.size(),
-          "throttled prefill did not cross more command boundaries");
-  require(throttled.size() >= 3 &&
-              std::all_of(throttled.begin(), throttled.end(),
-                          [](uint32_t rows) {
-                            return rows <= kThrottledPrefillStartupRows;
-                          }),
-          "throttled prefill command exceeded its work slice");
+  require(!unthrottled.empty() && throttled == unthrottled,
+          "the throttle changed the prefill command decomposition");
 }
 
 void testWireLifecycleAndCacheHit() {
@@ -1324,7 +1321,7 @@ int main() {
   try {
     testWireLifecycleAndCacheHit();
     testPromptProgress();
-    testPowerSlicesPrefillCommands();
+    testPowerKeepsPrefillDecomposition();
     testCapacityFailureHasOneTerminalFrame();
     testFatalFramingClosesConnection();
     testRequestErrorKeepsFraming();

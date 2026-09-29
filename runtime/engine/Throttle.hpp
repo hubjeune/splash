@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -29,38 +28,6 @@ inline constexpr double kThrottleSampleWeight = 0.125;
 // predicate, so SIGINT/SIGTERM and shutdown stay responsive however long the
 // sleep is.
 inline constexpr double kThrottleSleepSliceMilliseconds = 10.0;
-
-// One prefill command runs at full GPU speed from start to finish, and the
-// duty-cycle sleep lands only at a command boundary. A throttled engine
-// therefore bounds each prefill command's measured work near this target so
-// the sleep interleaves with a long prompt instead of following a
-// multi-second burst. The same 500 ms bound the scheduler already applies to
-// a contended prefill keeps each command's fixed per-command cost small.
-// Power 100 never applies the bound.
-inline constexpr double kThrottledPrefillWorkMilliseconds = 500.0;
-
-// Until the first prefill timing sample exists, this row cap bounds a
-// throttled command in place of the measured per-row interval.
-inline constexpr uint32_t kThrottledPrefillStartupRows = 128;
-
-// Rows one throttled prefill command may carry so its measured work stays
-// near targetWorkMilliseconds, from the scheduler's smoothed milliseconds per
-// prefill row. An unusable estimate returns the startup row cap, and a
-// command always carries at least one row.
-[[nodiscard]] inline uint32_t throttledPrefillRowLimit(
-    double millisecondsPerRow, double targetWorkMilliseconds) noexcept {
-  if (!std::isfinite(millisecondsPerRow) || millisecondsPerRow <= 0.0 ||
-      !std::isfinite(targetWorkMilliseconds) ||
-      targetWorkMilliseconds <= 0.0) {
-    return kThrottledPrefillStartupRows;
-  }
-  const double rows = targetWorkMilliseconds / millisecondsPerRow;
-  if (!(rows > 1.0))
-    return 1;
-  if (rows >= double(std::numeric_limits<uint32_t>::max()))
-    return std::numeric_limits<uint32_t>::max();
-  return static_cast<uint32_t>(rows);
-}
 
 [[nodiscard]] constexpr bool validPowerPercent(uint32_t powerPercent) noexcept {
   return powerPercent >= kMinimumPowerPercent &&
@@ -106,6 +73,11 @@ enum class ThrottleWorkKind : uint8_t { Prefill, Decode };
 // command-completion safe point, with the completed batch's measured GPU work
 // interval, so an idle engine never sleeps. A bounded slice that finds the
 // abort predicate true ends the sleep at once instead of finishing it.
+//
+// The throttle paces by sleeping between the same prefill commands power 100
+// runs, never by reslicing them: the prefill path's floating-point kernels are
+// not bit-invariant to a command's row budget, so a finer split changes
+// decoded output at decoding ties.
 class GpuThrottle final {
 public:
   GpuThrottle() = default;

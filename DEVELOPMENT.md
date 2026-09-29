@@ -128,15 +128,19 @@ measure the GPU work interval of each completed command, smooth it, and sleep
 `work × (100 − N) / N` before the next one, so `work / (work + sleep)` equals
 `N` percent. That reduces sustained heat, fan noise and battery drain. Prefill
 and decode keep separate averages, since a prefill command is far longer than
-a decode one. A prefill command holds up to the 2048-row prompt budget, and
-because the sleep only lands at a command boundary, a long prompt would
-otherwise run in full-speed 2048-row bursts. While throttling, the engine
-therefore also bounds each prefill command near the same 500 ms work target,
-so a long prompt crosses many shorter commands and the same sleep paces it.
-Those shorter commands select a different GPU kernel tiling from power 100's
-larger commands, so a throttled run can pick a different token than power 100
-when the next-token scores are tied or nearly tied. The sleep itself does not
-alter the computation, and power 100 stays a byte-for-byte no-op.
+a decode one.
+
+The throttle paces by sleeping between the same prefill commands power 100
+dispatches, never by reslicing a prompt into shorter commands. The prefill
+path's floating-point kernels are not bit-invariant to a command's row budget,
+so a different split selects a different accumulation order and can change a
+decoded token at a tie; keeping the unthrottled decomposition makes a
+throttled run byte-identical to power 100, including the KV cache it leaves
+behind. The residual is a prompt that fits inside a single command: it
+prefills at full speed and the sleep lands after it, because there is no
+earlier command boundary to pace within. A longer prompt crosses up to
+2048-row commands and state boundaries, and the same sleep interleaves with
+it.
 
 The throttle is a startup ceiling like `--max-memory`, not a runtime control,
 and the native command's sleep is applied between commands while work is
@@ -799,8 +803,9 @@ path. Constrained requests use a separate batch for the host mask exchange.
 
 Long prefill uses disposable rolling checkpoints every 4096 tokens. Contended
 prefill adapts toward a 500 ms slice, keeping 2048-token chunks for long
-unopposed work; `--power` below 100 applies the same slice to unopposed work
-([GPU power](#gpu-power)). These policies do not extend client deadlines.
+unopposed work; `--power` below 100 paces unopposed work by sleeping at those
+command boundaries without changing them ([GPU power](#gpu-power)). These
+policies do not extend client deadlines.
 Memory recovery waits are bounded: after a suspension, new work waits for
 resident requests only while memory is still short, and at most for the 30 s
 resource wait; suspended requests then resume first, each within its own
@@ -1004,6 +1009,7 @@ and `REVISION`, `DRAFT_MODEL` and `LANGUAGE_ONLY=1` as its `--revision`,
 | `verify-models` | the installer's restarts without the Hub, `verify --full`, and the prepared-weight record (`dev/tools/installer_restarts.py`, [Release check](#release-check)) |
 | `test-real` | vision parity with the family's fixture in `dev/tests/fixtures/vision-parity/` when the installation serves vision, and the native model runtime oracle |
 | `test-http-real` | the HTTP frontend on an isolated server (`dev/tests/smoke_real.py`) |
+| `test-power-real` | that `--power 50` decodes byte-identically to `--power 100` on the committed decoding-tie fixtures (`dev/tests/power_identity_real.py`) |
 | `test-agent-real` | the five official clients through `splash serve` (`dev/tests/agent_real.py`), in `AGENT_SCENARIO` `complete` (the default) or `smoke` |
 | `test-release-real` | the HTTP smoke and all five clients on one `splash serve` |
 | `test-performance-real` | the native decode and partial-prefix benchmark, or with `BASELINE` its ABBA comparison with that build (`dev/benchmarks/backend_regression.py`) |
@@ -1078,6 +1084,9 @@ family, so it runs once on each Mac. Per model, `release-check`:
   the installation loads (`verify-models`; a legacy package is only hashed);
 - runs the HTTP smoke, which for a text-only installation checks the 400s
   instead of images (`test-http-real`);
+- checks that `--power 50` leaves greedy decoding byte-identical to
+  `--power 100` on the committed tie fixtures, each power level in a fresh
+  server process (`test-power-real`);
 - compares this build with `BASELINE`, which must have another build
   identity, in ABBA order (`test-performance-real`): output tokens and
   acceptance must be identical (`EXPECT_OUTPUT_CHANGE=1` allows changed

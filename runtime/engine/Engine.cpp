@@ -35,13 +35,6 @@ Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
     throw std::invalid_argument(
         "prefill checkpoint interval must span a draft window and whole KV pages");
   }
-  // One long prefill command would run at full GPU speed, because the
-  // duty-cycle sleep lands only at a command boundary. While throttling, the
-  // scheduler bounds each prefill command's work so the same sleep paces the
-  // prompt itself. Power 100 never reaches the throttling path.
-  if (throttle_.throttling())
-    scheduler_.setThrottledPrefillWorkMilliseconds(
-        kThrottledPrefillWorkMilliseconds);
 }
 
 void Engine::submit(EngineRequest value) {

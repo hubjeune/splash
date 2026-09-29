@@ -42,7 +42,7 @@ HTTP_SMOKE_ARGS ?=
 	check-native-engine check-native-cpu check-native-metal check-python-engine \
 	install-development _install-development release-check test \
 	test-agent-real test-http-real test-performance-real test-release-real \
-	test-models test-python test-real \
+	test-models test-python test-real test-power-real \
 	test-engine test-engine-cpu test-engine-metal test-sanitizers
 
 # Decided by the stamp's content, as the environment is: a rebuilt
@@ -107,6 +107,10 @@ test-http-real: preflight $(TARGET) verify-build-identity
 	TRANSFORMERS_VERBOSITY=error $(PYTHON) dev/tests/smoke_real.py \
 		--model "$(MODEL)" --package "$(MODEL_ROOT)" $(HTTP_SMOKE_ARGS)
 
+test-power-real: preflight $(TARGET) verify-build-identity
+	TRANSFORMERS_VERBOSITY=error $(PYTHON) dev/tests/power_identity_real.py \
+		--model "$(MODEL)" --package "$(MODEL_ROOT)"
+
 agent-preflight: model-selection install-development
 	$(PYTHON) dev/tests/agent_real.py $(AGENT_ARGS) --preflight-only
 
@@ -163,6 +167,7 @@ release-check: preflight
 	$(MAKE) --no-print-directory test-real
 	$(MAKE) --no-print-directory verify-models
 	$(MAKE) --no-print-directory test-http-real
+	$(MAKE) --no-print-directory test-power-real
 	$(MAKE) --no-print-directory test-performance-real
 	@test -z "$$(git status --porcelain)" || { \
 		echo "error: release checkout is not clean" >&2; \

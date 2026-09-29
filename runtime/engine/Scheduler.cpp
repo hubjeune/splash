@@ -1,7 +1,5 @@
 #include "engine/Scheduler.hpp"
 
-#include "engine/Throttle.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -302,16 +300,7 @@ Scheduler::planPrefill(std::vector<PrefillRequestView> ready) const {
 uint32_t Scheduler::prefillBudget(
     const PrefillRequestView &leader,
     std::span<const PrefillRequestView> ready) const {
-  uint32_t maximum = model::ExecutionLimits::prefillTokenBudget;
-  // A throttled engine turns a long prompt into bounded commands so the
-  // duty-cycle sleep can pace the prompt itself. The bound applies whether or
-  // not peers contend: one long command would otherwise run at full GPU speed
-  // until it completes.
-  if (throttledPrefillWorkMilliseconds_ > 0.0) {
-    maximum = std::min(
-        maximum, throttledPrefillRowLimit(prefillMillisecondsPerToken_,
-                                          throttledPrefillWorkMilliseconds_));
-  }
+  const uint32_t maximum = model::ExecutionLimits::prefillTokenBudget;
   if (prefillMillisecondsPerToken_ <= 0.0)
     return maximum;
   uint32_t rows = maximum;

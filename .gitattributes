@@ -7,3 +7,4 @@
 /.gitattributes export-ignore
 *.patch -whitespace
 *.pdf binary
+dev/tests/fixtures/power-identity/*.txt -whitespace
