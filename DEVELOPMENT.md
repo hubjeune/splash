@@ -376,12 +376,19 @@ Vision comes from the target repository: MLX's `vision_tower.*` tensors,
 linking only `config.json` and the shards holding them, or the GGUF
 repository's root projector, a GGUF whose name holds `mmproj` (as
 `mmproj-BF16.gguf` or `MODEL-mmproj-BF16.gguf`), chosen by its header: a `clip`
-projector whose weights are BF16, or F32; BF16 is preferred. F16 has a narrower
-exponent than BF16, so an F16 projector has already rounded small weights and
-is not used. The processor configuration (MLX `preprocessor_config.json`, the
-GGUF's `clip.vision` metadata) must describe the one preprocessing Splash
-implements (`server/images.py`); it is checked before any weight download and
-not installed.
+projector whose weights are BF16, F32 or F16; BF16 is preferred, then F32, then
+F16. The tower runs in BF16 and preparation never rounds a weight: every value
+must be exactly a BF16, which preparation checks tensor by tensor and refuses
+otherwise, naming the tensor and its file. F16 holds ten mantissa bits to
+BF16's seven, so an F16 projector whose values need more precision than BF16
+can hold is refused there. One whose values all fit BF16's significand
+prepares, as ukisai/Swift-1.5-Qwen3.8-27B-GGUF's does: each of its 457,666,560
+F16 values is exactly a BF16. Subnormality alone decides nothing here, since
+512 of the 1023 possible F16 subnormals need a wider significand, so the
+per-value check is the only authority. The processor configuration (MLX
+`preprocessor_config.json`, the GGUF's `clip.vision` metadata) must describe
+the one preprocessing Splash implements (`server/images.py`); it is checked
+before any weight download and not installed.
 
 Both sources prepare the packed `vision/model.bin` layout, which the one BF16
 vision operator reads: BF16 tensors are copied, and F32 or F16 tensors are
