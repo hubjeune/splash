@@ -106,13 +106,15 @@ def select_gguf(files, variant):
 def select_vision(repo):
     """The name and header of the GGUF repository's vision projector, chosen
     by content among its root GGUF files named mmproj, whatever the publisher
-    calls them: a clip model whose weights are BF16, or F32, which
-    preparation converts only where every value is exact; BF16 is preferred.
-    The tower runs in BF16 and preparation never rounds a weight: F16 has a
-    narrower exponent than BF16, so an F16 projector has already rounded
-    small weights, as a quantized one has. Each header costs a few range
+    calls them: a clip model whose weights are BF16, F32 or F16, preferred in
+    that order. The tower runs in BF16 and preparation never rounds a weight:
+    every projector value must be exactly a BF16, which preparation checks per
+    tensor and refuses otherwise, naming the tensor and its file. F16 holds ten
+    mantissa bits to BF16's seven, so an F16 projector whose values spend them
+    is refused there, while one whose values are all exactly BF16 (its
+    subnormals, for instance) prepares. Each header costs a few range
     requests."""
-    usable, found = {"BF16": [], "F32": []}, []
+    usable, found = {"BF16": [], "F32": [], "F16": []}, []
     for name in filter(_projector_named, _root_ggufs(repo.files)):
         with repo.open(name) as stream:
             header = gguf.Metadata(stream, tensors=True)
@@ -122,8 +124,12 @@ def select_vision(repo):
             for kind in header.tensors.values()
         }
         found.append(f"{name} ({architecture}: {', '.join(sorted(types))})")
-        if architecture == "clip" and types and types <= {"BF16", "F32"}:
-            usable["BF16" if "BF16" in types else "F32"].append((name, header))
+        if architecture != "clip" or not types or not types <= {"BF16", "F32", "F16"}:
+            continue
+        # BF16, then F32, then F16: a projector holding any F16 tensor is
+        # tried last, since its values may not be exactly BF16.
+        precision = "F16" if "F16" in types else "BF16" if "BF16" in types else "F32"
+        usable[precision].append((name, header))
     for precision, projectors in usable.items():
         if len(projectors) == 1:
             return projectors[0]
@@ -134,7 +140,7 @@ def select_vision(repo):
                 + ", describe no single tower; use --language-only to serve text only"
             )
     raise models.ModelError(
-        "the GGUF repository has no BF16 or F32 vision projector ("
+        "the GGUF repository has no BF16, F32 or F16 vision projector ("
         + ("; ".join(found) or "no GGUF named mmproj")
         + "); use --language-only to serve text only"
     )

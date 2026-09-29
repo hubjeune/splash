@@ -539,29 +539,38 @@ class GgufMetadataTests(unittest.TestCase):
         f32 = (vision_fixture(), [(name, GGML["F32"]) for name, _ in tensors])
         f16 = (vision_fixture(), [(tensors[0][0], GGML["F16"]), tensors[1]])
         text = (fixture(), tensors)
-        # Other publishers' names; F16 and non-vision files never count.
+        # Other publishers' names; non-vision files never count.
         repo = projectors(
             **{"mmproj-Model-bf16": bf16, "mmproj-Model-f16": f16, "mmproj-x": text}
         )
         name, header = upstream.select_vision(repo)
         self.assertEqual(name, "mmproj-Model-bf16.gguf")
         self.assertEqual(header.values["general.architecture"], "clip")
+        # BF16, then F32, then F16.
         self.assertEqual(
             upstream.select_vision(
                 projectors(**{"mmproj-f16": f16, "mmproj-f32": f32})
             )[0],
             "mmproj-f32.gguf",
         )
-        with self.assertRaisesRegex(
-            models.ModelError,
-            r"no BF16 or F32 vision projector \(mmproj-f16.gguf \(clip: F16, F32\); "
-            r"mmproj-x.gguf \(qwen35moe: BF16, F32\)\); use --language-only",
-        ):
-            upstream.select_vision(projectors(**{"mmproj-f16": f16, "mmproj-x": text}))
+        # An F16 projector is chosen when it is the only one: preparation
+        # converts it exactly and refuses any value that is not a BF16.
+        self.assertEqual(
+            upstream.select_vision(projectors(**{"mmproj-f16": f16}))[0],
+            "mmproj-f16.gguf",
+        )
         with self.assertRaisesRegex(
             models.ModelError, "several BF16 vision projectors"
         ):
             upstream.select_vision(projectors(**{"mmproj-a": bf16, "mmproj-b": bf16}))
+        with self.assertRaisesRegex(models.ModelError, "several F16 vision projectors"):
+            upstream.select_vision(projectors(**{"mmproj-a": f16, "mmproj-b": f16}))
+        with self.assertRaisesRegex(
+            models.ModelError,
+            r"no BF16, F32 or F16 vision projector \(mmproj-x.gguf "
+            r"\(qwen35moe: BF16, F32\)\); use --language-only",
+        ):
+            upstream.select_vision(projectors(**{"mmproj-x": text}))
         # Prism ML prefixes the model's name.
         self.assertEqual(
             upstream.select_vision(
@@ -627,10 +636,11 @@ class GgufMetadataTests(unittest.TestCase):
             changed["tokenizer/chat_template.jinja"].read_text(), "updated template"
         )
 
-    def gguf_repository(self, *, vision=True):
+    def gguf_repository(self, *, vision=True, projector="F32"):
         """unsloth/Qwen3.6-35B-A3B-GGUF on a FakeHub, with the drafts'
-        repository: a loadable target GGUF, an F32 projector and conflicting
-        sidecars, which must not override the selected GGUF's metadata."""
+        repository: a loadable target GGUF, a projector of the selected dtype
+        and conflicting sidecars, which must not override the selected GGUF's
+        metadata."""
 
         def build(root):
             root.mkdir(parents=True)
@@ -641,11 +651,10 @@ class GgufMetadataTests(unittest.TestCase):
                 loadable_tensors(values, self.root).items(),
             )
             if vision:
-                write_gguf(
-                    root / "mmproj-F32.gguf",
-                    vision_fixture(),
-                    [("v.patch_embd.weight", GGML["F32"])],
-                )
+                kinds = [("v.patch_embd.weight", GGML["F32"])]
+                if projector == "F16":
+                    kinds.insert(0, ("v.blk.0.attn_qkv.weight", GGML["F16"]))
+                write_gguf(root / f"mmproj-{projector}.gguf", vision_fixture(), kinds)
             for name in ("config.json", "tokenizer.json", "tokenizer_config.json"):
                 (root / name).write_text("invalid sidecar")
 
@@ -662,6 +671,19 @@ class GgufMetadataTests(unittest.TestCase):
         ):
             upstream.prepare(chosen)
         return output.getvalue()
+
+    def test_an_f16_projector_is_selected_and_installed(self):
+        fake = self.gguf_repository(projector="F16")
+        chosen = selection(self.root, GGUF_REPO + ":Q4_K_M", language_only=False)
+        output = self.prepare(chosen)
+        self.assertIn(f"Selected model-Q4_K_M.gguf from {GGUF_REPO}.", output)
+        record = assembly.verify(chosen.link, full=True)
+        self.assertEqual(record["vision_format"], "gguf")
+        self.assertEqual(
+            (chosen.link / "vision/mmproj.gguf").resolve(),
+            (fake.snapshot(GGUF_REPO, "a" * 40) / "mmproj-F16.gguf").resolve(),
+        )
+        self.assertEqual(fake.downloads.count(f"{GGUF_REPO}/mmproj-F16.gguf"), 1)
 
     def test_gguf_only_repository_assembly_never_resolves_other_target_sources(self):
         fake = self.gguf_repository()
