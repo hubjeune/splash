@@ -1471,13 +1471,51 @@ CommandTicket MetalBackend::submitCommandAsync(
     // The serving loop is long-lived, so bound their temporary ownership to
     // encoding; the command retains everything needed for GPU execution.
     @autoreleasepool {
-        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        // splash-m5 (F1): SPLASH_M5_CONCURRENT=1 encodes with a concurrent
+        // dispatch encoder and inserts a buffer memory barrier only before a
+        // dispatch whose bindings overlap (same allocation, overlapping byte
+        // range) any binding since the last barrier. Every binding is treated
+        // as a possible write, and kernels reach memory only through their
+        // bindings, so ordering between dependent dispatches is preserved while
+        // independent neighbours may overlap. Unset: the serial encoder.
+        static const bool concurrent = [] {
+            const char *value = std::getenv("SPLASH_M5_CONCURRENT");
+            return value && value[0] == '1';
+        }();
+        id<MTLComputeCommandEncoder> encoder = concurrent
+            ? [command computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]
+            : [command computeCommandEncoder];
         if (!encoder) {
             failBeforeCommit("unable to create Metal compute encoder");
         }
+        struct Touched { const void *allocation; uint64_t begin, end; };
+        std::vector<Touched> touched;
         try {
             for (const PreparedDispatch &item : prepared) {
                 const ComputeDispatch &dispatch = *item.source;
+                if (concurrent) {
+                    bool overlaps = false;
+                    for (const BufferBinding &binding : dispatch.buffers) {
+                        const MetalBuffer::Impl &buffer = *binding.buffer.impl_;
+                        const void *allocation = buffer.allocation.get();
+                        const uint64_t begin = buffer.offsetBytes, end = begin + buffer.lengthBytes;
+                        for (const Touched &t : touched)
+                            if (t.allocation == allocation && begin < t.end && t.begin < end) {
+                                overlaps = true;
+                                break;
+                            }
+                        if (overlaps) break;
+                    }
+                    if (overlaps) {
+                        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                        touched.clear();
+                    }
+                    for (const BufferBinding &binding : dispatch.buffers) {
+                        const MetalBuffer::Impl &buffer = *binding.buffer.impl_;
+                        touched.push_back({buffer.allocation.get(), buffer.offsetBytes,
+                                           buffer.offsetBytes + buffer.lengthBytes});
+                    }
+                }
                 [encoder setComputePipelineState:item.pipeline];
                 for (const BufferBinding &binding : dispatch.buffers) {
                     const MetalBuffer::Impl &buffer = *binding.buffer.impl_;

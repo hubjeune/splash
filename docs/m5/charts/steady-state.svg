@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380">
+<style>
+  .bg{fill:#ffffff} .t{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .l{fill:#57606a;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .v{fill:#1f2328;font:11px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .g{stroke:#d0d7de;stroke-width:1} .gain{fill:#1a7f37;font:600 11px -apple-system,Segoe UI,Helvetica,Arial,sans-serif} .s0{fill:#8c959f} .s1{fill:#0969da} .s2{fill:#1a7f37} .s3{fill:#bf8700}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117} .t,.v{fill:#e6edf3} .l{fill:#8d96a0} .g{stroke:#30363d} .gain{fill:#3fb950}
+    .s0{fill:#6e7681} .s1{fill:#4493f8} .s2{fill:#3fb950} .s3{fill:#d29922}}
+</style>
+<rect class="bg" width="760" height="380" rx="8"/>
+<text class="t" x="60" y="28">Long reasoning, steady state: stock 1.1.0 vs Splish</text>
+<line class="g" x1="60" x2="740" y1="310.0" y2="310.0"/>
+<text class="l" x="52" y="314.0" text-anchor="end">0</text>
+<line class="g" x1="60" x2="740" y1="259.2" y2="259.2"/>
+<text class="l" x="52" y="263.2" text-anchor="end">100</text>
+<line class="g" x1="60" x2="740" y1="208.4" y2="208.4"/>
+<text class="l" x="52" y="212.4" text-anchor="end">200</text>
+<line class="g" x1="60" x2="740" y1="157.6" y2="157.6"/>
+<text class="l" x="52" y="161.6" text-anchor="end">300</text>
+<line class="g" x1="60" x2="740" y1="106.8" y2="106.8"/>
+<text class="l" x="52" y="110.8" text-anchor="end">400</text>
+<line class="g" x1="60" x2="740" y1="56.0" y2="56.0"/>
+<text class="l" x="52" y="60.0" text-anchor="end">500</text>
+<text class="l" x="14" y="183.0" transform="rotate(-90 14 183.0)" text-anchor="middle">aggregate tok/s</text>
+<rect class="s0" x="68.5" y="243.3" width="31.0" height="66.7" rx="2"/>
+<text class="v" x="84.0" y="239.3" text-anchor="middle">131</text>
+<rect class="s1" x="102.5" y="219.7" width="31.0" height="90.3" rx="2"/>
+<text class="v" x="118.0" y="215.7" text-anchor="middle">178</text>
+<text class="gain" x="118.0" y="201.7" text-anchor="middle">+35%</text>
+<text class="l" x="102.5" y="328" text-anchor="middle">27B, 1</text>
+<rect class="s0" x="153.5" y="196.6" width="31.0" height="113.4" rx="2"/>
+<text class="v" x="169.0" y="192.6" text-anchor="middle">223</text>
+<rect class="s1" x="187.5" y="161.7" width="31.0" height="148.3" rx="2"/>
+<text class="v" x="203.0" y="157.7" text-anchor="middle">292</text>
+<text class="gain" x="203.0" y="143.7" text-anchor="middle">+31%</text>
+<text class="l" x="187.5" y="328" text-anchor="middle">27B, 2</text>
+<rect class="s0" x="238.5" y="197.1" width="31.0" height="112.9" rx="2"/>
+<text class="v" x="254.0" y="193.1" text-anchor="middle">222</text>
+<rect class="s1" x="272.5" y="142.6" width="31.0" height="167.4" rx="2"/>
+<text class="v" x="288.0" y="138.6" text-anchor="middle">330</text>
+<text class="gain" x="288.0" y="124.6" text-anchor="middle">+48%</text>
+<text class="l" x="272.5" y="328" text-anchor="middle">27B, 3</text>
+<rect class="s0" x="323.5" y="158.1" width="31.0" height="151.9" rx="2"/>
+<text class="v" x="339.0" y="154.1" text-anchor="middle">299</text>
+<rect class="s1" x="357.5" y="111.0" width="31.0" height="199.0" rx="2"/>
+<text class="v" x="373.0" y="107.0" text-anchor="middle">392</text>
+<text class="gain" x="373.0" y="93.0" text-anchor="middle">+31%</text>
+<text class="l" x="357.5" y="328" text-anchor="middle">27B, 4</text>
+<rect class="s0" x="408.5" y="238.6" width="31.0" height="71.4" rx="2"/>
+<text class="v" x="424.0" y="234.6" text-anchor="middle">140</text>
+<rect class="s1" x="442.5" y="219.1" width="31.0" height="90.9" rx="2"/>
+<text class="v" x="458.0" y="215.1" text-anchor="middle">179</text>
+<text class="gain" x="458.0" y="201.1" text-anchor="middle">+27%</text>
+<text class="l" x="442.5" y="328" text-anchor="middle">Swift, 1</text>
+<rect class="s0" x="493.5" y="196.1" width="31.0" height="113.9" rx="2"/>
+<text class="v" x="509.0" y="192.1" text-anchor="middle">224</text>
+<rect class="s1" x="527.5" y="159.7" width="31.0" height="150.3" rx="2"/>
+<text class="v" x="543.0" y="155.7" text-anchor="middle">296</text>
+<text class="gain" x="543.0" y="141.7" text-anchor="middle">+32%</text>
+<text class="l" x="527.5" y="328" text-anchor="middle">Swift, 2</text>
+<rect class="s0" x="578.5" y="196.2" width="31.0" height="113.8" rx="2"/>
+<text class="v" x="594.0" y="192.2" text-anchor="middle">224</text>
+<rect class="s1" x="612.5" y="136.5" width="31.0" height="173.5" rx="2"/>
+<text class="v" x="628.0" y="132.5" text-anchor="middle">342</text>
+<text class="gain" x="628.0" y="118.5" text-anchor="middle">+52%</text>
+<text class="l" x="612.5" y="328" text-anchor="middle">Swift, 3</text>
+<rect class="s0" x="663.5" y="163.8" width="31.0" height="146.2" rx="2"/>
+<text class="v" x="679.0" y="159.8" text-anchor="middle">288</text>
+<rect class="s1" x="697.5" y="106.7" width="31.0" height="203.3" rx="2"/>
+<text class="v" x="713.0" y="102.7" text-anchor="middle">400</text>
+<text class="gain" x="713.0" y="88.7" text-anchor="middle">+39%</text>
+<text class="l" x="697.5" y="328" text-anchor="middle">Swift, 4</text>
+<rect class="s0" x="60" y="350" width="12" height="12" rx="2"/>
+<text class="l" x="78" y="360">stock 1.1.0</text>
+<rect class="s1" x="167" y="350" width="12" height="12" rx="2"/>
+<text class="l" x="185" y="360">Splish</text>
+<text class="l" x="740" y="360" text-anchor="end">model, concurrent requests; mean of 2 rounds</text>
+</svg>

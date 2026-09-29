@@ -608,9 +608,10 @@ per family over the grouped rows: the register form in `linear_gguf_sgmatrix.met
 one in `kernels/shared/moe_gguf.metal`, which Apple9 takes for experts mostly in the formats it
 stages (`MoeShape::expertFormat`). The float router and alpha/beta projections run in
 `kernels/shared/gguf_float.metal`, and the token rows are gathered by one template in
-`kernels/shared/embedding.metal`. These plans are fixed rules of GPU family, core count, shape and
-format: `Linear::setChoices` and `ExecutionPlans::install` reject tuned entries for block
-projections and GGUF MoE blocks.
+`kernels/shared/embedding.metal`. These plans are fixed rules of GPU family, core count, shape
+and format, except that a block (GGUF) decode projection can take a measured choice from a
+file (`SPLASH_KERNEL_CHOICES`, `runtime/KernelChoicesFile.hpp`). Block prefill projections and
+GGUF MoE blocks still reject tuned entries in `Linear::setChoices` and `ExecutionPlans::install`.
 
 A GGUF kernel of one quantized tensor names its epilogue last: `a` none, `r` residual, `g` the
 up pass with the silu gate. The staged ones are `gguf_decode_<format>_m<rows>_<e>` and
@@ -1040,7 +1041,9 @@ prints, per key, the winner with its paired GPU and wall-time gain, spelled as
 the enumerators it would install, or that the default is kept; it changes no
 default and saves no profile. For a GGUF model
 it measures only the attention kernels and the draft, and says so in its
-header, since GGUF projection and MoE plans read no tuned choice
+header, because the tuner collects only affine projections; GGUF decode choices
+are measured outside the tuner (`build/m5/kernel-bench --gguf`, built by
+`dev/m5/build.sh`) and loaded from `tuning/*.choices`
 ([GGUF targets](#gguf-targets)). Keep generated reports, profiles, local paths
 and experiment notes out of the source tree and commits.
 

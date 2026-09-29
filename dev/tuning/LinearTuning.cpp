@@ -176,7 +176,7 @@ LinearTuningResult tuneLinear(metal::MetalBackend &backend,
       throw std::invalid_argument("invalid Linear tuning measurement options or admission");
     if (input.weights.empty() || input.weights.size() > kMaximumLinearTuningRepresentatives)
       throw std::invalid_argument("Linear tuning requires 1..8 representative weight views");
-    // Block-quantized plans are not tuned: their only candidate is the baseline.
+    // The tuner measures affine workloads only; GGUF decode choices come from build/m5/kernel-bench.
     if (input.workload.weightLayout != WeightLayout::Affine64)
       throw std::invalid_argument("Linear tuning takes affine workloads");
     result.representativeCount = static_cast<uint32_t>(input.weights.size());

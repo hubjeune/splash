@@ -1,0 +1,8 @@
+# splash-m5: GGUF K-quant (Q4_K_M, Q6_K) decode choices, M5 Max 40 cores, Swift-1.5 shapes.
+# kernel-bench --gguf q4k|q6k --candidates, two runs: the only win in both is attention qkv
+# unsplit (+7-17% Q4_K, +12-20% Q6_K). Choices are keyed by shape, not format.
+# out  in    rows phase  epilogue tile        groups simdgroups splits
+14336  5120  8    decode none     ggufstaged  224    2          1
+14336  5120  16   decode none     ggufstaged  224    2          1
+14336  5120  24   decode none     ggufstaged  224    2          1
+14336  5120  32   decode none     ggufstaged  224    2          1

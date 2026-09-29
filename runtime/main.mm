@@ -2,6 +2,7 @@
 #include "engine/FdTransport.hpp"
 #include "engine/Bootstrap.hpp"
 #include "engine/Status.hpp"
+#include "KernelChoicesFile.hpp"
 #include "model/Model.hpp"
 #include "model/ModelDescriptor.hpp"
 
@@ -274,6 +275,11 @@ bootstrapConfig(const NativeArguments &arguments) {
   config.resources.modelRoot = arguments.modelRoot;
   config.resources.model = arguments.model;
   config.resources.buildId = SPLASH_BUILD_ID;
+  if (auto choices = m5::kernelChoicesFromEnvironment()) {
+    std::cerr << "splash-m5: " << choices->linear.size()
+              << " linear kernel choices from " << std::getenv("SPLASH_KERNEL_CHOICES") << '\n';
+    config.resources.operatorChoices = std::move(choices);
+  }
   config.resources.maximumMemoryBytes = arguments.maxMemoryBytes;
   config.resources.maximumCacheDiskBytes = arguments.maxCacheDiskBytes;
   config.resources.kvFormat = arguments.kvFormat;

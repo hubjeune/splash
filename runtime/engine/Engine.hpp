@@ -149,6 +149,10 @@ private:
     uint64_t resumeKvTargetTokens = 0;
     ResourceWait resourceWait;
     std::vector<uint32_t> exactTokens;
+    // splash-m5 copy rule: the continuation start of the most recent earlier occurrence
+    // of each SPLASH_M5_COPY_MIN_MATCH-token window of exactTokens, by window hash.
+    std::unordered_map<uint64_t, uint32_t> copyIndex;
+    size_t copyIndexedEnd = 0;
     std::optional<CacheProbe> admissionProbe;
     std::vector<StateBoundary> stateBoundaries;
     size_t stateBoundaryCursor = 0;
@@ -210,6 +214,8 @@ private:
   [[nodiscard]] bool retireCheckpoint(Request &request);
   void publishReachedStateBoundaries(Request &request,
                                      uint32_t promptProcessed);
+  // splash-m5 copy rule: a decode item's copy draft, from the request's committed tokens.
+  void fillCopyDraft(Request &active, ModelBatchItem &item);
   [[nodiscard]] Prepared prepare(BatchPlan &plan,
                                  std::vector<ModelBatchItem> &items,
                                  double nowMilliseconds);

@@ -235,6 +235,19 @@ void Sampling::addAcceptance(
             params, {params.lanes, 1, 1}, {1, 1, 1});
 }
 
+void Sampling::addCopyOverride(metal::CommandGraph &graph,
+                               metal::MetalBuffer proposedTokens,
+                               metal::MetalBuffer candidates,
+                               metal::MetalBuffer proposalProbabilities,
+                               const CopyOverrideParams &params) const {
+  if (!params.lanes || params.lanes > kMaximumLanes)
+    throw std::invalid_argument("invalid copy override batch");
+  graph.add("m5_copy_override",
+            {std::move(proposedTokens), std::move(candidates),
+             std::move(proposalProbabilities)},
+            params, {uint64_t{params.lanes} * SPLASH_DRAFT_PROPOSAL_TOKENS, 1, 1}, {1, 1, 1});
+}
+
 void Sampling::addVerifyInput(metal::CommandGraph &graph,
                               metal::MetalBuffer draftInputTokens,
                               metal::MetalBuffer proposedTokens,

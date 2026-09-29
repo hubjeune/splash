@@ -2,6 +2,7 @@
 
 #include "metal/CommandGraph.hpp"
 #include "metal/abi/ExecutionGeometry.h"
+#include "metal/abi/Sampling.h"
 #include "metal/MetalBackend.hpp"
 
 #include <cstdint>
@@ -109,6 +110,10 @@ public:
       std::span<const uint32_t> maximumRetained,
       std::span<const SamplingPolicy> policies, uint32_t stopToken0,
       uint32_t stopToken1) const;
+  // splash-m5 copy rule: overwrite drafted positions with copied tokens (one-hot q).
+  void addCopyOverride(metal::CommandGraph &graph, metal::MetalBuffer proposedTokens,
+                       metal::MetalBuffer candidates, metal::MetalBuffer proposalProbabilities,
+                       const CopyOverrideParams &params) const;
   void addVerifyInput(metal::CommandGraph &graph,
                       metal::MetalBuffer draftInputTokens,
                       metal::MetalBuffer proposedTokens,

@@ -2293,6 +2293,27 @@ Runtime::decodeAsync(const BatchPlan &plan,
                                  batchStats);
   }
   if (verified) {
+    // splash-m5 copy rule: lanes the engine gave a copy draft replace their proposals.
+    CopyOverrideParams copy{};
+    copy.lanes = width;
+    bool copying = false;
+    for (uint32_t lane = 0; lane < width; ++lane) {
+      const ModelBatchItem &item = items[lane];
+      const Impl::Request &entry = *lanes[lane].request;
+      // The copy starts with its prediction of the pending anchor; it drafts only if right.
+      const bool aligned = item.copyLength >= 2 && entry.pendingToken &&
+                           item.copyTokens[0] == *entry.pendingToken;
+      const uint32_t length = aligned ? std::min<uint32_t>(item.copyLength - 1, kDraftProposalTokens) : 0;
+      copy.lengths[lane] = length;
+      for (uint32_t k = 0; k < length; ++k)
+        copy.tokens[lane * kDraftProposalTokens + k] = item.copyTokens[k + 1];
+      copying = copying || length;
+    }
+    if (copying)
+      impl_->sampling.addCopyOverride(
+          commandGraph, impl_->decodeArena->packed(DecodeTensor::ProposedTokens, width),
+          impl_->decodeArena->packed(DecodeTensor::Candidates, width),
+          impl_->decodeArena->packed(DecodeTensor::ProposalProbs, width), copy);
     impl_->encodeBatchVerifyInput(commandGraph, width);
     impl_->encodeBatchEmbedding(commandGraph, DecodeTensor::InputTokens,
                                 DecodeTensor::Hidden0, width);

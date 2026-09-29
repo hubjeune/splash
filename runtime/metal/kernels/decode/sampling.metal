@@ -845,6 +845,29 @@ kernel void decode_sample_argmax_reduce(device const float *partial_values [[buf
     tokens[row] = index;
 }
 
+// splash-m5 copy rule (TensorFold's): a lane whose recent tokens occurred earlier drafts
+// what followed them. The draft distribution at a copied position is one-hot (q = 1 on
+// the copied token), so greedy and sampled acceptance stay exact.
+kernel void m5_copy_override(device uint *proposed [[buffer(0)]],
+                             device uint *candidates [[buffer(1)]],
+                             device float *probabilities [[buffer(2)]],
+                             constant CopyOverrideParams &params [[buffer(3)]],
+                             uint index [[thread_position_in_grid]]) {
+  constexpr uint Positions = SPLASH_DRAFT_PROPOSAL_TOKENS;
+  const uint lane = index / Positions, position = index % Positions;
+  if (lane >= params.lanes || position >= params.lengths[lane])
+    return;
+  const uint token = params.tokens[lane * Positions + position];
+  const uint slot = lane * Positions + position;
+  proposed[slot] = token;
+  device uint *ids = candidates + slot * 16;
+  device float *q = probabilities + slot * 16;
+  ids[0] = token;
+  q[0] = 1.0f;
+  for (uint i = 1; i < 16; ++i)
+    q[i] = 0.0f;
+}
+
 kernel void verify_input_tokens(
     device const uint *draft_input [[buffer(0)]],
     device const uint *draft_tokens [[buffer(1)]],

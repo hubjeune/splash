@@ -1,6 +1,11 @@
 #include "engine/Engine.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <set>
+#include <sstream>
+#include <string>
+#include <cstdlib>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -959,6 +964,61 @@ void Engine::publishReachedStateBoundaries(Request &active,
   armNextStateBoundary(active);
 }
 
+namespace {
+
+// splash-m5 copy rule (TensorFold's): SPLASH_M5_COPY_MIN_MATCH=N (0 or unset: off). When the
+// last N committed tokens occurred earlier in the request (prompt or output), the next
+// verify drafts the (up to) 7 tokens that followed that occurrence instead of DFlash's.
+uint32_t copyMinMatch() {
+  static const uint32_t value = [] {
+    const char *text = std::getenv("SPLASH_M5_COPY_MIN_MATCH");
+    return text && *text ? static_cast<uint32_t>(std::strtoul(text, nullptr, 10)) : 0u;
+  }();
+  return value;
+}
+
+uint64_t windowHash(const uint32_t *tokens, uint32_t count) {
+  uint64_t hash = 1469598103934665603ull;
+  for (uint32_t i = 0; i < count; ++i) {
+    hash ^= tokens[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+} // namespace
+
+void Engine::fillCopyDraft(Request &active, ModelBatchItem &item) {
+  const uint32_t window = copyMinMatch();
+  const std::vector<uint32_t> &tokens = active.exactTokens;
+  const size_t size = tokens.size();
+  if (!window || size <= window)
+    return;
+  // Index every window that ends before the current one (which ends at size).
+  for (size_t end = std::max<size_t>(active.copyIndexedEnd, window); end < size; ++end)
+    active.copyIndex[windowHash(&tokens[end - window], window)] = static_cast<uint32_t>(end);
+  active.copyIndexedEnd = size;
+  const auto found = active.copyIndex.find(windowHash(&tokens[size - window], window));
+  if (found == active.copyIndex.end())
+    return;
+  const size_t follow = found->second;
+  if (!std::equal(tokens.begin() + (follow - window), tokens.begin() + follow,
+                  tokens.begin() + (size - window)))
+    return;  // a hash collision
+  const size_t length = std::min<size_t>(item.copyTokens.size(), size - follow);
+  std::copy_n(tokens.begin() + follow, length, item.copyTokens.begin());
+  item.copyLength = static_cast<uint32_t>(length);
+  if (const char *path = std::getenv("SPLASH_M5_COPY_DEBUG")) {  // "C id size length tokens..."
+    static FILE *debug = std::fopen(path, "a");
+    if (debug) {
+      std::fprintf(debug, "C %llu %zu %zu", static_cast<unsigned long long>(active.request.id), size, length);
+      for (size_t k = 0; k < length; ++k) std::fprintf(debug, " %u", item.copyTokens[k]);
+      std::fprintf(debug, "\n");
+      std::fflush(debug);
+    }
+  }
+}
+
 Engine::Prepared Engine::prepare(BatchPlan &plan,
                                  std::vector<ModelBatchItem> &items, double now) {
   items.reserve(plan.items.size());
@@ -1006,6 +1066,9 @@ Engine::Prepared Engine::prepare(BatchPlan &plan,
       item.inputTokens =
           std::span<const uint32_t>(active.exactTokens)
               .subspan(scheduled.promptOffset, scheduled.tokenCount);
+    } else if (plan.kind == WorkKind::Decode &&
+               active.request.constraint == ConstraintMode::None) {
+      fillCopyDraft(active, item);
     }
     items.push_back(std::move(item));
   }
@@ -1321,6 +1384,41 @@ void Engine::apply(const BatchPlan &plan,
     if (plan.kind == WorkKind::Decode) {
       draftedTokens += result.draftedTokens;
       acceptedDraftTokens += result.acceptedDraftTokens;
+      // splash-m5: SPLASH_M5_ACCEPT_LOG=PATH appends "lanes drafted accepted" per request
+      // per decode step, for the acceptance-length histogram (draft-length study).
+      static FILE *acceptLog = [] {
+        const char *path = std::getenv("SPLASH_M5_ACCEPT_LOG");
+        return path && *path ? std::fopen(path, "a") : nullptr;
+      }();
+      if (acceptLog) {
+        std::fprintf(acceptLog, "%u %u %u\n", plan.width(), result.draftedTokens,
+                     result.acceptedDraftTokens);
+        std::fflush(acceptLog);
+      }
+      // splash-m5: SPLASH_M5_TOKEN_LOG=PATH, for the copy-rule study (dev/m5/copy_rule.py):
+      // "P id n tokens..." (the prompt, once per request), then per decode step
+      // "S id accepted n tokens..." (the tokens this step emitted).
+      static FILE *tokenLog = [] {
+        const char *path = std::getenv("SPLASH_M5_TOKEN_LOG");
+        return path && *path ? std::fopen(path, "a") : nullptr;
+      }();
+      if (tokenLog) {
+        static std::set<std::string> prompted;
+        std::ostringstream id;
+        id << active.request.id;
+        std::ostringstream line;
+        if (prompted.insert(id.str()).second) {
+          line << "P " << id.str() << ' ' << active.promptTokens;
+          for (uint32_t i = 0; i < active.promptTokens && i < active.exactTokens.size(); ++i)
+            line << ' ' << active.exactTokens[i];
+          line << '\n';
+        }
+        line << "S " << id.str() << ' ' << result.acceptedDraftTokens << ' ' << result.outputTokens.size();
+        for (const auto token : result.outputTokens) line << ' ' << token;
+        line << '\n';
+        std::fputs(line.str().c_str(), tokenLog);
+        std::fflush(tokenLog);
+      }
       // A terminal anchor is emitted without a target KV row; it never enters
       // a cached block.
       const uint32_t storedTokens =
