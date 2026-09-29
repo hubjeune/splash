@@ -144,8 +144,10 @@ def summarize(records: list[dict]) -> list[dict]:
             raise ValueError(f"duplicate performance sample: {key}")
         # splash-m5: SPLASH_M5_ALLOW_TRANSCRIPT_DIFF=1 compares builds whose kernels
         # reassociate sums (near-tie tokens differ); speed only, not a correctness gate.
-        if paired and next(iter(paired.values())) != output and not os.environ.get(
-            "SPLASH_M5_ALLOW_TRANSCRIPT_DIFF"
+        if (
+            paired
+            and next(iter(paired.values())) != output
+            and not os.environ.get("SPLASH_M5_ALLOW_TRANSCRIPT_DIFF")
         ):
             raise ValueError(f"baseline/candidate transcript differs: {key}")
         paired[row["version"]] = output
