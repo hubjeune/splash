@@ -253,7 +253,7 @@ public:
                                        FloatOutput destination = FloatOutput::BFloat16);
   [[nodiscard]] std::vector<LinearPlan> candidates(LinearWorkload workload) const;
   // Installed only at startup; encoding does a read-only lookup, never tuning.
-  // Block projection plans are not tuned: their workloads take no choice.
+  // A block (GGUF) decode plan may take an installed choice; block prefill may not.
   void setChoices(std::span<const LinearChoice> choices);
   // Returns what the scratch table describes after the dispatch.
   PreparedInput add(metal::CommandGraph &graph, LinearBuffers buffers,
@@ -299,7 +299,7 @@ private:
                                       std::span<const Projection *const> projections = {}) const;
   // Counts `dispatches` dispatches that each fuse `lanes` request lanes.
   static void account(LinearDispatchStats &stats, uint32_t lanes, uint32_t dispatches) noexcept;
-  // GGUF policy and dispatch (LinearGguf.cpp). Block plans are not tuned.
+  // GGUF policy and dispatch (LinearGguf.cpp); installed block decode choices override it.
   [[nodiscard]] LinearConfig ggufBaseline(LinearWorkload workload,
                                           std::span<const Projection *const> projections) const;
   // The scratch of every tile a block decode plan of the workload may take.

@@ -89,7 +89,7 @@ TuningWorkloads collectTuningWorkloads(
                          const ops::Projection *gate = nullptr) {
     if (!weight.inputSize || !weight.outputSize)
       throw std::invalid_argument("operator probe projection has no geometry");
-    // Block projections are not tuned: a choice table may not hold their workloads.
+    // The tuner collects affine projections only; GGUF decode choices come from build/m5/kernel-bench.
     if (weight.layout() != ops::WeightLayout::Affine64 ||
         (gate && gate->layout() != ops::WeightLayout::Affine64)) return;
     const auto sizes = phase == LinearPhase::Prefill ? prefillRows : decodeWidths;

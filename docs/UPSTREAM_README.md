@@ -1,5 +1,5 @@
-<!-- Upstream Splash's README (Inco), kept unchanged for reference. Splish's own page is the
-repository README. Relative links below were written for the repository root. -->
+<!-- Upstream Splash's README (Inco), kept unchanged for reference. The repository README is
+this fork's own page. Relative links below were written for the repository root. -->
 
 # Splash
 

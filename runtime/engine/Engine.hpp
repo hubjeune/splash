@@ -13,7 +13,6 @@
 #include <limits>
 #include <optional>
 #include <unordered_map>
-#include <unordered_map>
 #include <vector>
 
 namespace splash::engine {

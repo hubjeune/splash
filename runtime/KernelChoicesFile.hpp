@@ -11,11 +11,12 @@
 // phase: prefill | decode.  epilogue: none | residual | gateup | upwithgate.
 // tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup | splitsums32 |
 //       ggufstaged | ggufregister (these two key GGUF / block-quantized workloads).
-// Only the Affine64 weight layout is covered (the layout of Splash packages
-// and MLX 4-bit checkpoints). Any malformed line fails startup loudly.
+// The remaining tiles cover the Affine64 weight layout (Splash packages and
+// MLX 4-bit checkpoints). Any malformed line fails startup loudly.
 
 #include "ops/ExecutionPlans.hpp"
 
+#include <cstdlib>
 #include <fstream>
 #include <optional>
 #include <sstream>
