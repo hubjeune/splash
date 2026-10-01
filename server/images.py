@@ -129,9 +129,15 @@ def prepare(payload: bytes, max_pixels: int = MAX_PIXELS) -> PreparedImage:
                 # A thin strip (e.g. an accidental 8192 x 17 selection): centre it
                 # on white, as Qwen composites transparency, so it stays usable.
                 padded = -(-long_side // MAX_ASPECT)
-                size = (image.width, padded) if image.width >= image.height else (padded, image.height)
+                size = (
+                    (image.width, padded)
+                    if image.width >= image.height
+                    else (padded, image.height)
+                )
                 canvas = Image.new("RGB", size, (255, 255, 255))
-                canvas.paste(image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2))
+                canvas.paste(
+                    image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2)
+                )
                 image = canvas
             height, width = smart_resize(image.height, image.width, max_pixels)
             if (image.height, image.width) != (height, width):

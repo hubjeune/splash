@@ -41,7 +41,6 @@ if __package__:
     from .backend import NativeBackend, remaining_request_time
     from .chat_templates import REASONING_EFFORTS, ChatTemplateError, ChatTemplates
     from .constraints import ConstraintFactory, validate_tokenizer
-    from .tokenization import restore_pretokenizer
     from .diagnostics import log_unexpected, print_request, print_status
     from .errors import APIError, ContextLengthError
     from .frontend import Frontend, validate_served_model_name
@@ -63,6 +62,7 @@ if __package__:
         validate_tool_calls,
     )
     from .thinking import ThinkingCodec, ThinkingKeyError, load_thinking_key
+    from .tokenization import restore_pretokenizer
 else:
     import images as image_input
     import json_codec
@@ -83,7 +83,6 @@ else:
     from backend import NativeBackend, remaining_request_time
     from chat_templates import REASONING_EFFORTS, ChatTemplateError, ChatTemplates
     from constraints import ConstraintFactory, validate_tokenizer
-    from tokenization import restore_pretokenizer
     from diagnostics import log_unexpected, print_request, print_status
     from errors import APIError, ContextLengthError
     from frontend import Frontend, validate_served_model_name
@@ -105,6 +104,7 @@ else:
         validate_tool_calls,
     )
     from thinking import ThinkingCodec, ThinkingKeyError, load_thinking_key
+    from tokenization import restore_pretokenizer
 
     import runtime as engine_runtime
 
@@ -2041,7 +2041,9 @@ def main():
             args.tokenizer, local_files_only=True, trust_remote_code=False
         )
         if restore_pretokenizer(tokenizer, args.tokenizer):
-            print_status("Tokenizer · pre-tokenizer from tokenizer.json (combining marks kept with their letters)")
+            print_status(
+                "Tokenizer · pre-tokenizer from tokenizer.json (combining marks kept with their letters)"
+            )
         validate_tokenizer(tokenizer)
         chat_templates = ChatTemplates(tokenizer)
         print_status(f"Chat template · {chat_templates.describe()}")

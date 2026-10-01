@@ -33,7 +33,9 @@ def restore_pretokenizer(tokenizer, source):
 
     trained = Tokenizer.from_file(path).pre_tokenizer
     current = backend.pre_tokenizer
-    if trained is None or (current is not None and trained.__getstate__() == current.__getstate__()):
+    if trained is None or (
+        current is not None and trained.__getstate__() == current.__getstate__()
+    ):
         return False
     backend.pre_tokenizer = trained
     return True
