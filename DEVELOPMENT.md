@@ -1006,6 +1006,26 @@ resource check without it. They
 include the preparation of small synthetic MLX, GGUF and vision sources and the
 GGUF kernels on synthetic tensors. Hosted CI runs CPU checks and sanitizers.
 
+### Validation evidence
+
+An isolated `HF_HOME` keeps a validation run's Hub cache out of the shared one,
+but a fresh home makes every model load download its weights again. Point it at
+`build/test-hf-home`, which `make test-hf-home` links to this machine's shared
+Hugging Face home (`${HF_HOME:-$HOME/.cache/huggingface}`), so the load reads
+and writes that cache instead:
+
+```sh
+make test-hf-home                    # idempotent; the no-mistakes prepare step
+HF_HOME=build/test-hf-home HF_HUB_OFFLINE=1 ./splash serve --model OWNER/REPO
+```
+
+A run worktree starts without `build/`, so `make test-hf-home` creates the link
+there; `HF_HUB_CACHE=build/test-hf-home/hub` selects the same cache when only
+the Hub cache is relocated. Pre-warm the revisions a run needs, then set
+`HF_HUB_OFFLINE=1` once they are cached: the load then proves it reads the
+shared cache and downloads nothing. A load that cannot resolve from the cache
+fails instead of fetching, which is the evidence that no re-download happens.
+
 The real-model targets take `MODEL` exactly as `splash serve --model` does,
 and `REVISION`, `DRAFT_MODEL` and `LANGUAGE_ONLY=1` as its `--revision`,
 `--draft-model` and `--language-only`, and run the installation
