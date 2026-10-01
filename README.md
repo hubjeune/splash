@@ -27,11 +27,17 @@ carry over to other Macs, and to divert attention from the engine as a whole, it
 hardware-neutral pieces (loading kernel choices from a file, the copy rule, the benchmark tools)
 are available upstream if Inco wants them.
 
+**Splish v1.1** (September 2026) builds on v1.0 with newly tuned kernel choices: about 4% faster
+at one request on Qwen3.8-27B and 3–6% at 2–4 requests, a further 10–18% at one request on
+Qwen3.6-35B-A3B, a tuned table for the 20-core M5 Pro, and fixes for non-Latin tokenization and
+very thin images ([RESULTS.md](RESULTS.md)).
+
 **Against Splash 1.1.0 as shipped**, on the same Mac with the same models. Each cell is decode
 tok/s, stock → Splish (gain); at 2–4 requests it is the total across requests. Models are 4-bit
 affine (MLX-style, group 64, the Splash package format) unless marked GGUF, with Splash's default
 int8 KV cache and each model's DFlash2 draft. Method in
-[Versus stock Splash](#versus-stock-splash).
+[Versus stock Splash](#versus-stock-splash); the numbers below were measured on v1.0, and v1.1's
+change by version is in [RESULTS.md](RESULTS.md).
 
 | Workload | 1 request | 2 requests | 3 requests | 4 requests |
 |---|---:|---:|---:|---:|
@@ -43,6 +49,9 @@ int8 KV cache and each model's DFlash2 draft. Method in
 | Inco's Qwen3.8-27B, a 2K–128K-token document ([by context](#by-context-length)) | **+11% to +29%** | 96 → **118** (+24%, 64K) | | |
 | Swift-1.5 (a Qwen3.8-27B fine-tune), long reasoning | 141 → **179** (+27%) | 224 → **296** (+32%) | 224 → **342** (+52%) | 288 → **400** (+39%) |
 | Qwen3.6-35B-A3B, long reasoning | 331 → **348** (+5%) | 486 → **573** (+18%) | 553 → **672** (+22%) | 642 → **754** (+18%) |
+
+*Measured on v1.0. v1.1 adds about 4% at one request on the 27B, 3–6% at 2–4 requests, and a
+further 10–18% at one request on Qwen3.6-35B-A3B; see [RESULTS.md](RESULTS.md).*
 
 On top of that, the copy rule speeds up whole-file code edits (Swift-1.5, Splish without → with
 it): 144 → **180** tok/s (+24%) and 136 → **194** tok/s (+42%).
