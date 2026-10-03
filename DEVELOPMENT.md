@@ -1072,7 +1072,9 @@ header, because the tuner collects only affine projections; GGUF decode choices
 are measured outside the tuner (`build/m5/kernel-bench --gguf`, built by
 `dev/m5/build.sh`) and loaded from `tuning/*.choices`
 ([GGUF targets](#gguf-targets)). Keep generated reports, profiles, local paths
-and experiment notes out of the source tree and commits.
+and experiment notes out of the source tree and commits; the measured choices
+files in `tuning/` are the exception: they ship as inputs that `./splish` and
+`SPLASH_KERNEL_CHOICES` load.
 
 ### Release check
 

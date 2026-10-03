@@ -53,7 +53,7 @@ bool widerSplit(LinearWorkload w, LinearConfig config) noexcept {
 // splash-m5: the SplitSums32 kernels (one lane, residual, N32) take row sums a
 // decode_linear_q4_row_sums8 dispatch writes once per projection into
 // LinearScratch::sums ([group][row]), instead of every threadgroup recomputing
-// them from the whole input (FORK.md, H10).
+// them from the whole input.
 bool sumsSplit(LinearWorkload w) noexcept {
   // One lane copies all-K sums into threadgroup memory (K <= 17408); two to
   // four lanes read them from device memory (H12).
@@ -702,8 +702,8 @@ std::vector<LinearPlan> Linear::candidates(LinearWorkload w) const {
   // splash-m5: the N32 split tile for two to four lanes (plain and residual).
   if (multiLaneSplit(w, LinearTile::Split32)) {
     // One simdgroup per K partition only at 16 rows: at 24/32 rows it is not
-    // deterministic under Metal shader validation on K = 5120 (FORK.md,
-    // 2026-09-26); two simdgroups per partition are.
+    // deterministic under Metal shader validation on K = 5120; two simdgroups
+    // per partition are.
     if (w.rows == 16) append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Four});
     append({LinearTile::Split32, w.matrix.outputSize / 32, LinearSimdgroups::Eight});
   }

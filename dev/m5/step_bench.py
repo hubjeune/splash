@@ -7,7 +7,7 @@ for each configuration (ABAB... over --rounds), and reports for every batch widt
   fused   the real, one-command GPU time of a DFlash decode cycle (the serving path)
   parts   the sum of the same dispatches replayed one per command
   overlap parts - fused: what the fused command gains from kernel overlap at
-          boundaries (thesis: large threadgroups lose it; FORK.md)
+          boundaries
 
 plus paired differences against the first configuration with a 95% interval, and
 per-pipeline attributed time for pipelines that differ. A configuration is
@@ -16,7 +16,14 @@ decode-profile binary, and may bring their own metallib (kernel-only changes).
 
   dev/m5/step_bench.py --rounds 4 base=tuning/a.choices new=tuning/b.choices
 """
-import argparse, math, os, re, statistics as st, subprocess, sys
+
+import argparse
+import math
+import os
+import re
+import statistics as st
+import subprocess
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The model package or GGUF assembly root: --package, or SPLISH_PACKAGE.
@@ -34,29 +41,63 @@ def run_profile(spec, prompt, cycles, binary, metallib, package=PACKAGE):
     env.pop("SPLASH_KERNEL_CHOICES", None)
     if choices != "-":
         env["SPLASH_KERNEL_CHOICES"] = os.path.abspath(choices)
-    out = subprocess.run([binary, metallib, package, "--prompt-tokens", str(prompt), "--cycles", str(cycles)],
-                         capture_output=True, text=True, env=env, cwd=ROOT)
+    out = subprocess.run(
+        [
+            binary,
+            metallib,
+            package,
+            "--prompt-tokens",
+            str(prompt),
+            "--cycles",
+            str(cycles),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=ROOT,
+    )
     widths = parse(out.stdout)
     # decode-profile can end with "completed request was decoded" once a synthetic
     # request reaches its end during the extra cycles, after every width has
     # already been measured and printed; accept a run only if all four are there.
-    if out.returncode and not (len(widths) == 4 and "completed request was decoded" in out.stderr + out.stdout):
-        sys.exit(f"decode-profile failed ({spec}):\n{out.stdout[-800:]}{out.stderr[-800:]}")
+    if out.returncode and not (
+        len(widths) == 4 and "completed request was decoded" in out.stderr + out.stdout
+    ):
+        sys.exit(
+            f"decode-profile failed ({spec}):\n{out.stdout[-800:]}{out.stderr[-800:]}"
+        )
     return widths
 
 
 def parse(text):
     widths = {}
-    for block in re.finditer(r"== (B\d) decode cycle: ([\d.]+) ms fused, ([\d.]+) ms as \d+ separate dispatches ==\n"
-                             r"pipeline.*\n((?:.+\n)+)", text):
-        rows = {m[1]: float(m[3]) for m in re.finditer(r"^(\S+)\s+([\d.]+)\s+([\d.]+)\s+[\d.]+%", block[4], re.M)}
-        widths[block[1]] = {"fused": float(block[2]), "parts": float(block[3]), "rows": rows}
-    medians = {m[1]: float(m[2]) for m in re.finditer(r"(B\d) decode cycle: median fused gpu ([\d.]+) ms", text)}
+    for block in re.finditer(
+        r"== (B\d) decode cycle: ([\d.]+) ms fused, ([\d.]+) ms as \d+ separate dispatches ==\n"
+        r"pipeline.*\n((?:.+\n)+)",
+        text,
+    ):
+        rows = {
+            m[1]: float(m[3])
+            for m in re.finditer(
+                r"^(\S+)\s+([\d.]+)\s+([\d.]+)\s+[\d.]+%", block[4], re.M
+            )
+        }
+        widths[block[1]] = {
+            "fused": float(block[2]),
+            "parts": float(block[3]),
+            "rows": rows,
+        }
+    medians = {
+        m[1]: float(m[2])
+        for m in re.finditer(r"(B\d) decode cycle: median fused gpu ([\d.]+) ms", text)
+    }
     for w, v in widths.items():
         v["median"] = medians.get(w, v["fused"])
     # A width whose attributed replay was cut short still has its fused median.
     for w, m in medians.items():
-        widths.setdefault(w, {"fused": m, "parts": float("nan"), "rows": {}, "median": m})
+        widths.setdefault(
+            w, {"fused": m, "parts": float("nan"), "rows": {}, "median": m}
+        )
     return widths
 
 
@@ -73,7 +114,9 @@ def main():
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--cycles", type=int, default=9)
     ap.add_argument("--prompt-tokens", type=int, default=2048)
-    ap.add_argument("--binary", default=os.path.join(ROOT, "build/engine-tests/decode-profile"))
+    ap.add_argument(
+        "--binary", default=os.path.join(ROOT, "build/engine-tests/decode-profile")
+    )
     ap.add_argument("--package", default=PACKAGE, help="package or GGUF assembly root")
     ap.add_argument("--metallib", default=os.path.join(ROOT, "build/splash.metallib"))
     args = ap.parse_args()
@@ -84,22 +127,40 @@ def main():
     for r in range(args.rounds):
         order = configs if r % 2 == 0 else configs[::-1]
         for label, choices in order:
-            results[label].append(run_profile(choices, args.prompt_tokens, args.cycles, args.binary, args.metallib, args.package))
+            results[label].append(
+                run_profile(
+                    choices,
+                    args.prompt_tokens,
+                    args.cycles,
+                    args.binary,
+                    args.metallib,
+                    args.package,
+                )
+            )
         print(f"round {r + 1}/{args.rounds}", file=sys.stderr, flush=True)
     base = configs[0][0]
     widths = sorted(results[base][0])
-    print(f"step bench: {args.rounds} rounds x {args.cycles} cycles, {args.prompt_tokens}-token prompt; ms per cycle")
+    print(
+        f"step bench: {args.rounds} rounds x {args.cycles} cycles, {args.prompt_tokens}-token prompt; ms per cycle"
+    )
     for w in widths:
         print(f"\n{w}")
-        print(f"  {'config':14} {'fused (median)':>16} {'parts':>9} {'overlap':>8} {'vs ' + base:>22}")
+        print(
+            f"  {'config':14} {'fused (median)':>16} {'parts':>9} {'overlap':>8} {'vs ' + base:>22}"
+        )
         for label, _ in configs:
             f = [x[w]["median"] for x in results[label]]
             p = [x[w]["parts"] for x in results[label]]
             o = [x[w]["parts"] - x[w]["fused"] for x in results[label]]
             fm, fh = interval(f)
-            line = f"  {label:14} {fm:9.2f} ±{fh:4.2f} {st.mean(p):9.2f} {st.mean(o):8.2f}"
+            line = (
+                f"  {label:14} {fm:9.2f} ±{fh:4.2f} {st.mean(p):9.2f} {st.mean(o):8.2f}"
+            )
             if label != base:
-                d = [a[w]["median"] - b[w]["median"] for a, b in zip(results[label], results[base])]
+                d = [
+                    a[w]["median"] - b[w]["median"]
+                    for a, b in zip(results[label], results[base])
+                ]
                 dm, dh = interval(d)
                 line += f"   {dm:+6.2f} ±{dh:4.2f} ms ({100 * dm / st.mean(x[w]['median'] for x in results[base]):+5.1f}%)"
             print(line)
@@ -110,7 +171,10 @@ def main():
                 names |= set(x[w]["rows"])
         diffs = []
         for n in names:
-            means = [st.mean(x[w]["rows"].get(n, 0.0) for x in results[label]) for label, _ in configs]
+            means = [
+                st.mean(x[w]["rows"].get(n, 0.0) for x in results[label])
+                for label, _ in configs
+            ]
             if max(means) - min(means) > 0.05:
                 diffs.append((n, means))
         if diffs:

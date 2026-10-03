@@ -156,7 +156,7 @@ The first serve downloads the model and its DFlash2 draft and prepares the weigh
 Splash. `./splish` picks the tuned kernel choices for the model and turns on the copy rule; it
 prints what it chose. Then connect an agent (`./splish opencode`, `claude`, `codex`, `hermes`,
 `pi`) or any OpenAI- or Anthropic-compatible client, as with Splash
-([upstream README](docs/UPSTREAM_README.md)).
+([upstream README](https://github.com/incoai/splash#readme)).
 
 The tuned choices are for a **40-core M5 Max on macOS 27**. An independent tuning run on another
 40-core M5 Max on macOS 26.6 picked different winners for some shapes; the gains were in the same
