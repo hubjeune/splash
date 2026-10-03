@@ -258,9 +258,10 @@ void checkPair(ModelPackage package, bool sparse) {
   rejects([&] { (void)collectTuningWorkloads(package, prefill, decode); });
 }
 
-// A GGUF target is not tuned: the collector takes none of its projections or
-// MoE blocks, only the affine draft's, and a choice table may not hold a
-// block projection or GGUF MoE workload.
+// A GGUF target is not tuned by the collector: it takes none of the target's
+// projections or MoE blocks, only the affine draft's. A choice table may hold
+// a block (GGUF) decode choice but not a block prefill projection or a GGUF
+// MoE workload.
 void blockTarget() {
   ModelPackage package;
   const Qwen3_6MoeLayout layout;

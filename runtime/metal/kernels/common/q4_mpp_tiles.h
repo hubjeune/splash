@@ -97,7 +97,7 @@ inline void q4_store_input_sums(device const bfloat *input, uint input_size,
 // The destination's type Out is bf16, or fp32 for a plain projection's
 // logits (ops::Projection::destination), which keeps the sum unrounded.
 // splash-m5: SumsReady (default false) takes input_sums already holding every
-// quant group's row sums, [group][row] for all of K (FORK.md H10/H11).
+// quant group's row sums, [group][row] for all of K.
 template <ushort TileN, bool GateUp, bool AddResidual,
           ushort StorageN = TileN, bool Pipelined = false, ushort Simdgroups = 8,
           bool SumsReady = false, class Out>

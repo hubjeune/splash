@@ -116,11 +116,11 @@ test-models: install-development
 
 check-python-engine: install-development test-python test-models
 	$(PYTHON) -m compileall -q server install/*.py \
-		dev/tools dev/tests dev/benchmarks
+		dev/tools dev/tests dev/benchmarks dev/m5
 	$(PYTHON) -m ruff check --config dev/ruff.toml server \
-		install/*.py dev/tools dev/tests dev/benchmarks
+		install/*.py dev/tools dev/tests dev/benchmarks dev/m5
 	$(PYTHON) -m ruff format --check --config dev/ruff.toml server \
-		install/*.py dev/tools dev/tests dev/benchmarks
+		install/*.py dev/tools dev/tests dev/benchmarks dev/m5
 
 # It parses the server's sources, which need the environment's Python
 # (3.12-3.14); BUILD_ID_PYTHON, the build tools' python3, may be Xcode's 3.9.

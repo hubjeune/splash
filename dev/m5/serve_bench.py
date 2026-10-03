@@ -13,7 +13,14 @@ power, joules per token and GPU temperature (mean and max).
   dev/m5/serve_bench.py --label fork --port 8042 --model incoai/Qwen3.8-27B-Splash \\
       --concurrency 1,2,3,4 --out results.jsonl
 """
-import argparse, json, os, subprocess, threading, time, urllib.request
+
+import argparse
+import json
+import os
+import subprocess
+import threading
+import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 PROBLEMS = [
@@ -26,6 +33,8 @@ PROBLEMS = [
     "Three fair dice are rolled until the sum is at least 15. Find the expected number of rolls, "
     "as a reduced fraction. Reason carefully step by step.",
 ]
+
+
 def _key():
     if os.environ.get("SPLASH_API_KEY"):
         return os.environ["SPLASH_API_KEY"]
@@ -36,18 +45,41 @@ def _key():
 KEY = _key()
 
 
-DOCUMENT_TASK = ("Summarise the document above section by section in detail, then write a thorough critique "
-                 "of its structure and accuracy. Be exhaustive.")
+DOCUMENT_TASK = (
+    "Summarise the document above section by section in detail, then write a thorough critique "
+    "of its structure and accuracy. Be exhaustive."
+)
 
 
 def stream(port, model, lane, max_tokens, reasoning, prefix="", task="problems"):
-    body = {"model": model, "stream": True, "stream_options": {"include_usage": True},
-            "max_tokens": max_tokens, "temperature": 1.0, "top_p": 0.95, "top_k": 20,
-            "reasoning_effort": reasoning,
-            "messages": [{"role": "user", "content": (f"Here is a document:\n\n{prefix}\n\n" + DOCUMENT_TASK) if task == "document" else
-                          (f"Here is a document:\n\n{prefix}\n\nIgnore the document. " if prefix else "") + PROBLEMS[lane % len(PROBLEMS)]}]}
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(),
-                                 {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+    body = {
+        "model": model,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": max_tokens,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "reasoning_effort": reasoning,
+        "messages": [
+            {
+                "role": "user",
+                "content": (f"Here is a document:\n\n{prefix}\n\n" + DOCUMENT_TASK)
+                if task == "document"
+                else (
+                    f"Here is a document:\n\n{prefix}\n\nIgnore the document. "
+                    if prefix
+                    else ""
+                )
+                + PROBLEMS[lane % len(PROBLEMS)],
+            }
+        ],
+    }
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/chat/completions",
+        json.dumps(body).encode(),
+        {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+    )
     chunks, usage, finish = [], None, None  # (time, characters)
     with urllib.request.urlopen(req, timeout=3600) as response:
         for raw in response:
@@ -59,22 +91,34 @@ def stream(port, model, lane, max_tokens, reasoning, prefix="", task="problems")
                 usage = event["usage"]
             for choice in event.get("choices", []):
                 delta = choice.get("delta", {})
-                text = (delta.get("content") or "") + (delta.get("reasoning_content") or "") + \
-                       (delta.get("reasoning") or "")
+                text = (
+                    (delta.get("content") or "")
+                    + (delta.get("reasoning_content") or "")
+                    + (delta.get("reasoning") or "")
+                )
                 if text:
                     chunks.append((time.perf_counter(), len(text)))
                 finish = choice.get("finish_reason") or finish
-    return {"chunks": chunks, "tokens": usage["completion_tokens"] if usage else None, "finish": finish,
-            "prompt_tokens": usage["prompt_tokens"] if usage else None}
+    return {
+        "chunks": chunks,
+        "tokens": usage["completion_tokens"] if usage else None,
+        "finish": finish,
+        "prompt_tokens": usage["prompt_tokens"] if usage else None,
+    }
 
 
 class Power:
     """macmon samples (every 250 ms) on a thread for the life of the run."""
+
     def __init__(self):
         self.samples, self.process = [], None
         try:
-            self.process = subprocess.Popen(["macmon", "pipe", "-i", "250"], stdout=subprocess.PIPE,
-                                            stderr=subprocess.DEVNULL, text=True)
+            self.process = subprocess.Popen(
+                ["macmon", "pipe", "-i", "250"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
             threading.Thread(target=self._read, daemon=True).start()
         except FileNotFoundError:
             pass
@@ -83,8 +127,14 @@ class Power:
         for line in self.process.stdout:
             try:
                 d = json.loads(line)
-                self.samples.append((time.perf_counter(), d["all_power"], d["sys_power"],
-                                     d["temp"]["gpu_temp_avg"]))
+                self.samples.append(
+                    (
+                        time.perf_counter(),
+                        d["all_power"],
+                        d["sys_power"],
+                        d["temp"]["gpu_temp_avg"],
+                    )
+                )
             except (ValueError, KeyError):
                 pass
 
@@ -96,27 +146,54 @@ class Power:
         s = [x for x in self.samples if start <= x[0] <= end]
         if not s:
             return {}
-        return {"package_w": sum(x[1] for x in s) / len(s), "system_w": sum(x[2] for x in s) / len(s),
-                "gpu_temp_mean": sum(x[3] for x in s) / len(s), "gpu_temp_max": max(x[3] for x in s)}
+        return {
+            "package_w": sum(x[1] for x in s) / len(s),
+            "system_w": sum(x[2] for x in s) / len(s),
+            "gpu_temp_mean": sum(x[3] for x in s) / len(s),
+            "gpu_temp_max": max(x[3] for x in s),
+        }
 
 
-def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None, task="problems", warm=False):
+def run(
+    port,
+    model,
+    c,
+    max_tokens,
+    reasoning,
+    context_tokens=0,
+    corpus=None,
+    task="problems",
+    warm=False,
+):
     power = Power()
     time.sleep(1.0)
     start = time.perf_counter()
     with ThreadPoolExecutor(c) as pool:
         # A distinct passage per lane (about 4.2 characters per token), so lanes share no prefix.
-        prefixes = [corpus[lane * int(context_tokens * 4.4):][:int(context_tokens * 4.2)] if context_tokens else ""
-                    for lane in range(c)]
+        prefixes = [
+            corpus[lane * int(context_tokens * 4.4) :][: int(context_tokens * 4.2)]
+            if context_tokens
+            else ""
+            for lane in range(c)
+        ]
         prefill = []
         if warm:  # fill the prefix cache first, so timing starts with every lane decoding together
+
             def timed(lane):
                 t = time.perf_counter()
                 r = stream(port, model, lane, 1, reasoning, prefixes[lane], task)
                 return r["prompt_tokens"], time.perf_counter() - t
+
             prefill = list(pool.map(timed, range(c)))
             start = time.perf_counter()
-        results = list(pool.map(lambda lane: stream(port, model, lane, max_tokens, reasoning, prefixes[lane], task), range(c)))
+        results = list(
+            pool.map(
+                lambda lane: stream(
+                    port, model, lane, max_tokens, reasoning, prefixes[lane], task
+                ),
+                range(c),
+            )
+        )
     wall = time.perf_counter() - start
     time.sleep(0.5)
     power.stop()
@@ -129,12 +206,19 @@ def run(port, model, c, max_tokens, reasoning, context_tokens=0, corpus=None, ta
         steady_tokens += (r["tokens"] or 0) * inside / total
     window = max(last - first, 1e-9)
     tokens = sum(r["tokens"] or 0 for r in results)
-    row = {"concurrency": c, "steady_tok_s": steady_tokens / window, "naive_tok_s": tokens / wall,
-           "window_s": window, "wall_s": wall, "tokens": tokens,
-           "finish": [r["finish"] for r in results], "prompt_tokens": [r["prompt_tokens"] for r in results],
-           # Cold prefill of the warm-up request (prompt tokens / its wall time), when --warm ran one.
-           "prefill_tok_s": [n / t for n, t in prefill if n] if prefill else None,
-           **power.window(first, last)}
+    row = {
+        "concurrency": c,
+        "steady_tok_s": steady_tokens / window,
+        "naive_tok_s": tokens / wall,
+        "window_s": window,
+        "wall_s": wall,
+        "tokens": tokens,
+        "finish": [r["finish"] for r in results],
+        "prompt_tokens": [r["prompt_tokens"] for r in results],
+        # Cold prefill of the warm-up request (prompt tokens / its wall time), when --warm ran one.
+        "prefill_tok_s": [n / t for n, t in prefill if n] if prefill else None,
+        **power.window(first, last),
+    }
     if "package_w" in row:
         row["joules_per_token"] = row["package_w"] * window / max(steady_tokens, 1)
     return row
@@ -150,23 +234,48 @@ def main():
     ap.add_argument("--reasoning", default="medium")
     ap.add_argument("--round", type=int, default=1)
     ap.add_argument("--task", choices=("problems", "document"), default="problems")
-    ap.add_argument("--warm", action="store_true", help="prefill each request once before timing")
-    ap.add_argument("--context-tokens", type=int, default=0, help="long document before each prompt")
-    ap.add_argument("--corpus", default=os.environ.get("SPLISH_CORPUS", ""),
-                    help="plain-text corpus for --context-tokens (e.g. WikiText-2 wiki.test.raw)")
+    ap.add_argument(
+        "--warm", action="store_true", help="prefill each request once before timing"
+    )
+    ap.add_argument(
+        "--context-tokens", type=int, default=0, help="long document before each prompt"
+    )
+    ap.add_argument(
+        "--corpus",
+        default=os.environ.get("SPLISH_CORPUS", ""),
+        help="plain-text corpus for --context-tokens (e.g. WikiText-2 wiki.test.raw)",
+    )
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     if a.context_tokens and not a.corpus:
         ap.error("--context-tokens needs --corpus (or SPLISH_CORPUS)")
     corpus = open(a.corpus).read() if a.context_tokens else None
     for c in [int(x) for x in a.concurrency.split(",")]:
-        row = {"label": a.label, "model": a.model, "round": a.round, "context_tokens": a.context_tokens,
-               "task": a.task, **run(a.port, a.model, c, a.max_tokens, a.reasoning, a.context_tokens, corpus, a.task, a.warm)}
+        row = {
+            "label": a.label,
+            "model": a.model,
+            "round": a.round,
+            "context_tokens": a.context_tokens,
+            "task": a.task,
+            **run(
+                a.port,
+                a.model,
+                c,
+                a.max_tokens,
+                a.reasoning,
+                a.context_tokens,
+                corpus,
+                a.task,
+                a.warm,
+            ),
+        }
         with open(a.out, "a") as f:
             f.write(json.dumps(row) + "\n")
-        print(f"{a.label:6} r{a.round} C={c}: steady {row['steady_tok_s']:6.1f} tok/s (naive {row['naive_tok_s']:6.1f})"
-              f"  {row.get('joules_per_token', float('nan')):.2f} J/tok  gpu {row.get('gpu_temp_max', float('nan')):.0f}C max",
-              flush=True)
+        print(
+            f"{a.label:6} r{a.round} C={c}: steady {row['steady_tok_s']:6.1f} tok/s (naive {row['naive_tok_s']:6.1f})"
+            f"  {row.get('joules_per_token', float('nan')):.2f} J/tok  gpu {row.get('gpu_temp_max', float('nan')):.0f}C max",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

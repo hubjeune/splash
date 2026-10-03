@@ -9,7 +9,9 @@ its cheaper verify is priced in.
 
   dev/m5/accept_hist.py accept.log
 """
-import collections, sys
+
+import collections
+import sys
 
 steps = collections.defaultdict(list)
 for line in open(sys.argv[1]):
@@ -23,8 +25,15 @@ for width in sorted(steps):
     drafted = max(d for d, _ in rows)
     counts = collections.Counter(a for _, a in rows)
     mean = sum(a + 1 for _, a in rows) / len(rows)
-    print(f"width {width}: {len(rows)} request-steps, {drafted} drafted, mean {mean:.2f} tokens/step")
-    print("  accepted k:  " + "  ".join(f"{k}:{100 * counts[k] / len(rows):4.1f}%" for k in range(drafted + 1)))
+    print(
+        f"width {width}: {len(rows)} request-steps, {drafted} drafted, mean {mean:.2f} tokens/step"
+    )
+    print(
+        "  accepted k:  "
+        + "  ".join(
+            f"{k}:{100 * counts[k] / len(rows):4.1f}%" for k in range(drafted + 1)
+        )
+    )
     kept = []
     for d in range(1, drafted + 1):
         m = sum(min(a, d) + 1 for _, a in rows) / len(rows)
