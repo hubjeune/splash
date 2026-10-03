@@ -10,7 +10,7 @@
 //
 // phase: prefill | decode.  epilogue: none | residual | gateup | upwithgate.
 // tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup | splitsums32 |
-//       ggufstaged | ggufregister (these two key GGUF / block-quantized workloads).
+//       deep256 | ggufstaged | ggufregister (the last two key GGUF / block-quantized workloads).
 // The remaining tiles cover the Affine64 weight layout (Splash packages and
 // MLX 4-bit checkpoints). Any malformed line fails startup loudly.
 
