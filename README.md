@@ -450,7 +450,7 @@ engines are deterministic run to run.
    saves far more on large rewrites, but it changes the model's output format and needs a
    harness extension. Splish's copy rule keeps the model's exact output and needs nothing from
    the client, for smaller gains. The two can be combined.
-8. **A kernel lab** (`dev/m5/lab/`). Proposals for one projection's kernel are checked against
+8. **A kernel lab.** Proposals for one projection's kernel are checked against
    fp64, timed on a quiet GPU, and the best are swapped into the engine and timed inside real
    decode steps, which is where they have to win. Proposals came from theorist agents (Swift-1.5
    in DeepSeek Harness, `dsh`) and from Claude. The single-request results
@@ -555,7 +555,9 @@ engines are deterministic run to run.
 
 ## Benchmarks and tuning
 
-Every number above can be re-measured with the tools in [dev/m5/](dev/m5/).
+Every number above can be re-measured with the tools in [dev/m5/](dev/m5/), except the v11/v12
+and `deep256` results: those were measured upstream in Splish's kernel lab, which is not part of
+this fork.
 
 | Tool | What it measures |
 |---|---|
@@ -567,7 +569,6 @@ Every number above can be re-measured with the tools in [dev/m5/](dev/m5/).
 | `dev/m5/attn_compare.py`, `dev/m5/variant_lib.sh` | A kernel variant (Metal defines) against production, with output agreement |
 | `dev/m5/accept_hist.py`, `dev/m5/copy_rule.py` | Draft acceptance histograms and the copy-rule replay, from the diagnostic logs |
 | `dev/m5/tonight.sh` | The overnight run: serving, quality, harness, 64K, Qwen3.6-35B |
-| `dev/m5/lab/` (`run_rounds.sh`, `tester.py`, `incontext.py`, `retime.py`) | The kernel lab: proposals scored against fp64 and production, then timed inside real decode steps |
 | `dev/m5/seeded_identity.py`, `dev/m5/ab_engines.py` | Output identity between servers (seeded sampling; greedy) and paired tok/s |
 | `build/engine-tests/tune-kernels METALLIB MODEL_ROOT` | Splash's tuner; its winners become a choices file |
 
