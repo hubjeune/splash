@@ -1,7 +1,27 @@
 # commands.lint is intentionally omitted: the repository documents no standalone
 # lint/format target, and `make check` already runs the ruff check/format checks.
 commands:
+  # The evidence agent points an isolated HF_HOME at build/test-hf-home, but a
+  # run worktree starts without build/ and without a Hub cache: each run then
+  # downloads the real model into a fresh per-run cache. This links that path
+  # to the machine's shared Hugging Face home before the first configured
+  # command, and evidence gathering reuses the revisions already there.
+  # (DEVELOPMENT.md, Validation evidence.)
+  prepare: make test-hf-home
   test: make check
+
+# Repository-specific guidance for the Test step's evidence agent, read from
+# the trusted default branch like commands.*
+test:
+  instructions: |
+    Real-model evidence must reuse this machine's shared Hugging Face cache;
+    never create a Hub cache inside the run worktree. Before driving a model,
+    run `make test-hf-home` and point the isolated Hub home at the prepared
+    path: `export HF_HOME="$PWD/build/test-hf-home"` (or
+    `export HF_HUB_CACHE="$PWD/build/test-hf-home/hub"`). Once the revisions a
+    scenario needs are cached, add `HF_HUB_OFFLINE=1` so a load that would
+    download fails instead of fetching. See DEVELOPMENT.md, "Validation
+    evidence".
 
 # This fork intentionally has no CI: its delivery pipeline must not wait for
 # checks that never register.

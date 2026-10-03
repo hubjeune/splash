@@ -41,9 +41,41 @@ HTTP_SMOKE_ARGS ?=
 .PHONY: agent-preflight architecture-check check check-source \
 	check-native-engine check-native-cpu check-native-metal check-python-engine \
 	install-development _install-development release-check test \
-	test-agent-real test-http-real test-performance-real test-release-real \
-	test-models test-python test-real test-power-real \
+	test-agent-real test-hf-home test-http-real test-performance-real \
+	test-release-real test-models test-python test-real test-power-real \
 	test-engine test-engine-cpu test-engine-metal test-sanitizers
+
+# The in-worktree Hugging Face home evidence gathering points HF_HOME at, so
+# its Hub cache is this machine's shared one instead of a fresh per-run copy
+# (DEVELOPMENT.md, Validation evidence). Idempotent, and the repository's
+# no-mistakes preparation step, which runs before the first configured command
+# in a run worktree that starts without build/.
+HF_HOME_LINK := $(BUILD)/test-hf-home
+test-hf-home:
+	@set -eu; \
+	shared=$${HF_HOME:-$$HOME/.cache/huggingface}; \
+	case $$shared in /*) ;; *) \
+		echo "error: HF_HOME must be an absolute path: $$shared" >&2; exit 1;; \
+	esac; \
+	if test -e "$$shared" && ! test -d "$$shared"; then \
+		echo "error: the shared Hugging Face home is not a directory: $$shared" >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$$shared"; \
+	shared_physical=$$(cd -P -- "$$shared" && pwd -P); \
+	if test -e "$(HF_HOME_LINK)" && ! test -L "$(HF_HOME_LINK)"; then \
+		echo "error: $(HF_HOME_LINK) is not a symbolic link; remove it so evidence gathering reuses the shared cache" >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(BUILD)"; \
+	ln -sfn "$$shared" "$(HF_HOME_LINK)"; \
+	resolved=$$(cd -P -- "$(HF_HOME_LINK)" && pwd -P); \
+	test "$$resolved" = "$$shared_physical" || { \
+		echo "error: $(HF_HOME_LINK) does not resolve to $$shared_physical; remove it and rerun" >&2; \
+		exit 1; \
+	}; \
+	echo "$(HF_HOME_LINK) -> $$shared"; \
+	echo "model loads: HF_HOME=$(HF_HOME_LINK) (or HF_HUB_CACHE=$(HF_HOME_LINK)/hub)"
 
 # Decided by the stamp's content, as the environment is: a rebuilt
 # environment has no stamp, and under -j make may read the stamp's time
@@ -74,12 +106,13 @@ test-python: install-development
 	$(PYTHON) -m unittest discover -s dev/tests/engine -p '$(ENGINE_PYTHON_TEST_PATTERN)'
 	$(PYTHON) -m unittest dev/tests/test_server.py
 
-# Installer, model manifest, upstream resolution, GGUF metadata and
-# prepared-weight identity tests; none downloads or loads real weights.
+# Installer, model manifest, upstream resolution, GGUF metadata, prepared-weight
+# identity and validation-environment tests; none downloads or loads real
+# weights.
 test-models: install-development
 	$(PYTHON) -m unittest dev/tests/test_models.py dev/tests/test_upstream.py \
 		dev/tests/test_weight_preparation_identity.py dev/tests/test_gguf_metadata.py \
-		dev/tests/test_installer_restarts.py
+		dev/tests/test_installer_restarts.py dev/tests/test_validation_environment.py
 
 check-python-engine: install-development test-python test-models
 	$(PYTHON) -m compileall -q server install/*.py \
