@@ -81,7 +81,7 @@ What the fork adds on top of Splash 1.1.0:
 
 - **New verify kernels for the M5's tensor units.** Split-K kernels that compute each
   projection's row sums once (`SplitSums32`), plus lighter barriers. They carry the gain at
-  2–4 requests.
+  2–4 requests, and the plain-projection split-K (v1.1) at one request.
 - **Kernel choices measured for the chip** (`tuning/`), loaded from a file
   (`SPLASH_KERNEL_CHOICES`). They carry most of the single-request gain. Shipped Splash cannot
   take them: its choices are compiled in, and its tuner is a developer build target that is
@@ -97,8 +97,9 @@ What the fork adds on top of Splash 1.1.0:
   steady-state serving benchmark with power readings.
 
 **Where it is not faster.** Long-context attention itself is unchanged; the lead at 64K
-comes from everything around it. Qwen3.6-35B at one request gains only 5%, and GGUF models
-about 2%. Energy per token is lower at 3–4 requests, but mixed at 1–2.
+comes from everything around it. Qwen3.6-35B at one request gained only 5% in v1.0 (v1.1's
+table adds 10–18%), and GGUF models about 2%. Energy per token is lower at 3–4 requests, but
+mixed at 1–2.
 [Where stock is ahead or even](#where-stock-is-ahead-or-even) lists every case.
 
 Everything else is Inco's: the engine, the package format, the models and draft models, and
@@ -167,18 +168,20 @@ prints what it chose. Then connect an agent (`./splish opencode`, `claude`, `cod
 `pi`) or any OpenAI- or Anthropic-compatible client, as with Splash
 ([upstream README](docs/UPSTREAM_README.md)).
 
-The tuned choices are for a **40-core M5 Max on macOS 27**. An independent tuning run on another
-40-core M5 Max on macOS 26.6 picked different winners for some shapes; the gains were in the same
-direction but about half the size. That is why choices should be tuned per machine. On any other Mac, `./splish` keeps Splash's own
-defaults and still turns on the copy rule. Other M5 chips will need their own choices; an
-auto-tuner is [upcoming](#upcoming).
+The tuned choices are for a **40-core M5 Max on macOS 27**. On a **20-core M5 Pro**, `./splish`
+applies chip-specific tables where they exist ([Recommended settings](#recommended-settings)).
+An independent tuning run on another 40-core M5 Max on macOS 26.6 picked different winners for
+some shapes; the gains were in the same direction but about half the size. That is why choices
+should be tuned per machine. On any other Mac, `./splish` keeps Splash's own defaults and still
+turns on the copy rule. Other M5 chips will need their own choices; an auto-tuner is
+[upcoming](#upcoming).
 
 **Advanced.** `./splish` only sets these when you have not:
 
 | Variable | Effect |
 |---|---|
 | `SPLASH_KERNEL_CHOICES=FILE` | Kernel choices to load ([tuning/](tuning/)); unset means Splash's defaults |
-| `SPLISH_CHOICES=any` | Apply the tuned choices on a chip other than a 40-core M5 Max |
+| `SPLISH_CHOICES=any` | Apply the tuned choices on a chip they were not measured on |
 | `SPLASH_M5_COPY_MIN_MATCH=N` | Copy rule: draft verbatim continuations of N+ repeated tokens (default 16; 0 turns it off) |
 | `SPLASH_M5_ACCEPT_LOG`, `SPLASH_M5_TOKEN_LOG` | Diagnostics: acceptance histogram and per-step tokens |
 
@@ -250,9 +253,9 @@ access, authentication, and other options, see
 
 | Model | Choices file | Notes |
 |---|---|---|
-| Qwen3.8-27B family, Splash package (Inco's, Swift-1.5, other fine-tunes) | `tuning/m5max-40c-swift15-v12.choices` | Tuned on a 40-core M5 Max (v11/v12: kernel lab results, see [What worked](#what-worked)). Other M5 chips: run the tuner (`dev/tuning`). |
+| Qwen3.8-27B family, Splash package (Inco's, Swift-1.5, other fine-tunes) | `tuning/m5max-40c-swift15-v12.choices` | Tuned on a 40-core M5 Max (v11/v12: kernel lab results, see [What worked](#what-worked)); on a 20-core M5 Pro, `./splish` picks `tuning/m5pro-20c-qwen38-27b-hybrid.choices` for Inco's package and its abliterated variant instead. Other M5 chips: run the tuner (`dev/tuning`). |
 | Qwen3.8-27B GGUF Q8_0 | `tuning/m5max-40c-swift15-q80-v2.choices` | v2 tunes the DFlash draft too: decode step −2.8% / −2.8% / −4.9% / −6.6% at 1–4 requests |
-| Qwen3.6-35B-A3B | `tuning/m5max-40c-qwen36-35b-v2.choices` | v1 (the tuner's set): +5/+18/+22/+18% at 1–4 requests; v2 adds the one-request shapes the tuner left on defaults: a further +10% (greedy) to +18% (steady state) at one request |
+| Qwen3.6-35B-A3B | `tuning/m5max-40c-qwen36-35b-v2.choices` | v1 (the tuner's set): +5/+18/+22/+18% at 1–4 requests; v2 adds the one-request shapes the tuner left on defaults: a further +10% (greedy) to +18% (steady state) at one request (on a 20-core M5 Pro, `./splish` uses `tuning/m5max-40c-qwen36-35b.choices` instead for the 35B Splash packages) |
 | Qwen3.8-27B GGUF Q4_K_M, Q6_K | `tuning/m5max-40c-swift15-kquant-v2.choices` | v2 tunes the DFlash draft too: Q4_K_M decode step −1.7% to −4.5% at 1–4 requests (the G4a kernel does the rest) |
 
 **Copy rule:** on by default through `./splish` (`SPLASH_M5_COPY_MIN_MATCH=16`). It pays off on
@@ -551,7 +554,8 @@ engines are deterministic run to run.
    kernel, ~2% per step where it is significant); the IQ and Q2/Q3/Q5 formats are unmeasured.
 9. **Token-agreement check.** Compare next-token choices position by position against
    upstream, as the M1 port does. It is a finer quality gate than a task set.
-10. **Tuning other M5 chips.** The choices files are for a 40-core M5 Max; see [Upcoming](#upcoming).
+10. **Tuning other M5 chips.** The shipped tables cover a 40-core M5 Max and a 20-core M5 Pro
+    ([Recommended settings](#recommended-settings)); other chips still need their own.
 
 ## Benchmarks and tuning
 
@@ -596,7 +600,7 @@ memory and versions. Paste it into a
 
 ## Upcoming
 
-- **An auto-tuner** (`./splish tune --model …`, v1.1). It will run Splash's kernel tuner for your
+- **An auto-tuner** (`./splish tune --model …`). It will run Splash's kernel tuner for your
   chip and model, check every choice against an fp64 reference on the model's own shapes, keep
   a choice only if the whole decode step is faster, and write a choices file that `./splish`
   then uses. It brings the tuned gains to other M5 chips.
