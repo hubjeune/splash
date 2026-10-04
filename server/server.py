@@ -62,6 +62,7 @@ if __package__:
         validate_tool_calls,
     )
     from .thinking import ThinkingCodec, ThinkingKeyError, load_thinking_key
+    from .tokenization import restore_pretokenizer
 else:
     import images as image_input
     import json_codec
@@ -103,6 +104,7 @@ else:
         validate_tool_calls,
     )
     from thinking import ThinkingCodec, ThinkingKeyError, load_thinking_key
+    from tokenization import restore_pretokenizer
 
     import runtime as engine_runtime
 
@@ -2038,6 +2040,10 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(
             args.tokenizer, local_files_only=True, trust_remote_code=False
         )
+        if restore_pretokenizer(tokenizer, args.tokenizer):
+            print_status(
+                "Tokenizer · pre-tokenizer from tokenizer.json (combining marks kept with their letters)"
+            )
         validate_tokenizer(tokenizer)
         chat_templates = ChatTemplates(tokenizer)
         print_status(f"Chat template · {chat_templates.describe()}")

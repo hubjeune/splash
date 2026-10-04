@@ -10,7 +10,7 @@
 //
 // phase: prefill | decode.  epilogue: none | residual | gateup | upwithgate.
 // tile: n128 | n256 | paired128 | split32 | split64 | paired256 | simdgroup | splitsums32 |
-//       ggufstaged | ggufregister (these two key GGUF / block-quantized workloads).
+//       deep256 | ggufstaged | ggufregister (the last two key GGUF / block-quantized workloads).
 // The remaining tiles cover the Affine64 weight layout (Splash packages and
 // MLX 4-bit checkpoints). Any malformed line fails startup loudly.
 
@@ -49,7 +49,7 @@ inline ops::OperatorChoices loadKernelChoices(const std::string &path) {
       {"n128", LinearTile::N128}, {"n256", LinearTile::N256},
       {"paired128", LinearTile::Paired128}, {"split32", LinearTile::Split32},
       {"split64", LinearTile::Split64}, {"paired256", LinearTile::Paired256},
-      {"simdgroup", LinearTile::Simdgroup}, {"splitsums32", LinearTile::SplitSums32},
+      {"simdgroup", LinearTile::Simdgroup}, {"splitsums32", LinearTile::SplitSums32}, {"deep256", LinearTile::Deep256},
       {"ggufstaged", LinearTile::GgufStaged}, {"ggufregister", LinearTile::GgufRegister}};
 
   std::ifstream file(path);

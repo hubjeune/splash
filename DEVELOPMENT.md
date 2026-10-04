@@ -335,6 +335,14 @@ cached under `models/.metadata`, keyed by the size and digest of each source
 GGUF, the SHA-256 of `gguf.py` and the `tokenizers` version; publication is
 atomic and entries are hash-checked on use.
 
+`transformers` rebuilds the Qwen2 pre-tokenizer from its own split pattern,
+which lacks the `\p{M}` combining-mark class of a Qwen3.x `tokenizer.json`, so
+Hindi, Thai and vowelled Arabic would split into more tokens than the model was
+trained on. Startup restores the package's own pre-tokenizer when it differs
+(`restore_pretokenizer` in `server/tokenization.py`) and logs `Tokenizer ·
+pre-tokenizer from tokenizer.json` when it changes one; the rest of the loaded
+tokenizer is untouched.
+
 Request preparation merges the leading system and developer messages into one
 system message, joined by a blank line: Responses instructions and developer
 items, or an Anthropic `system` and a leading system message. A system message
@@ -367,8 +375,9 @@ it as `chat_template.later_system`:
 
 Every request, including image placeholder, token-count and judgment
 (`/v1/judgments`, `/v1/systemone`) rendering, uses the template chosen at
-startup; tokenizer files and the tokenizer object are unchanged. The probe's
-upstream fixtures are in `dev/tests/fixtures/chat_templates/`.
+startup; the chat-template probe changes neither tokenizer files nor the
+tokenizer object. The probe's upstream fixtures are in
+`dev/tests/fixtures/chat_templates/`.
 
 ### Vision
 
