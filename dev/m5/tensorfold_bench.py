@@ -12,7 +12,12 @@ timing (decode tok/s = (tokens - 1) / (last - first streamed token)) stays Tenso
 
   python3 dev/m5/tensorfold_bench.py BENCH_OPENAI_PY http://127.0.0.1:8042 MODEL --reps 5 --label fork
 """
-import importlib.util, json, os, sys, urllib.request
+
+import importlib.util
+import json
+import os
+import sys
+import urllib.request
 
 KEY = open(os.path.expanduser("~/.splash/api-key")).read().strip()
 _Request = urllib.request.Request
