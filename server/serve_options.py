@@ -224,6 +224,19 @@ def parse_decode_share(value):
     return share
 
 
+def parse_power(value):
+    """The GPU duty cycle: an integer percentage in [1, 100]."""
+    try:
+        power = int(value)
+    except ValueError:
+        power = 0
+    if not 1 <= power <= 100:
+        raise argparse.ArgumentTypeError(
+            "must be an integer duty-cycle percentage from 1 to 100"
+        )
+    return power
+
+
 def parse_max_image_pixels(value):
     try:
         pixels = int(value)
@@ -424,6 +437,18 @@ SERVE_OPTIONS = (
             default="fp32",
             help="recurrent state storage (default: fp32); bf16 halves each "
             "state, so memory and the SSD cache hold about twice as many",
+        ),
+    ),
+    ServeOption(
+        "--power",
+        "memory",
+        dict(
+            type=parse_power,
+            default=100,
+            metavar="PERCENT",
+            help="GPU duty-cycle percentage, 1..100 (default: 100, "
+            "unthrottled); lower values cap sustained GPU load to reduce "
+            "heat, fan noise and battery drain",
         ),
     ),
     ServeOption(

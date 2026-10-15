@@ -81,6 +81,7 @@ from .output import (
     validate_response_content,
 )
 from .thinking import ThinkingCodec, ThinkingKeyError, load_thinking_key
+from .tokenization import restore_pretokenizer
 
 # Request bodies held at once, from upload through preparation and, for what
 # a generation retains of them, until it ends, take at most max(this, twice
@@ -1673,6 +1674,8 @@ def _native_command(args, relaunch_context=None):
         command.extend(("--kv-format", args.kv_format))
     if args.state_format != "fp32":
         command.extend(("--state-format", args.state_format))
+    if args.power != 100:
+        command.extend(("--power", str(args.power)))
     if args.idle_release is not None:
         command.extend(
             ("--idle-release", serve_options.idle_release_text(args.idle_release))
@@ -1748,6 +1751,11 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(
             args.tokenizer, local_files_only=True, trust_remote_code=False
         )
+        if restore_pretokenizer(tokenizer, args.tokenizer):
+            print_status(
+                "Tokenizer · pre-tokenizer from tokenizer.json "
+                "(combining marks kept with their letters)"
+            )
         validate_tokenizer(tokenizer)
         thinking_end = thinking_end_tokens(tokenizer, args.thinking_end_text)
         chat_templates = ChatTemplates(tokenizer)

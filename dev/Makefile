@@ -42,7 +42,8 @@ HTTP_SMOKE_ARGS ?=
 	check-native-engine check-native-cpu check-native-metal check-native-build \
 	check-python \
 	install-development _install-development release-check test \
-	test-agent-real test-http-real test-performance-real test-release-real \
+	test-agent-real test-hf-home test-http-real test-performance-real \
+	test-power-real test-release-real \
 	test-python test-real verify-models \
 	test-engine test-engine-cpu test-engine-metal test-sanitizers
 
@@ -111,6 +112,47 @@ test: test-engine test-python
 test-http-real: preflight $(TARGET) verify-build-identity
 	TRANSFORMERS_VERBOSITY=error $(PYTHON) dev/tests/smoke_real.py \
 		--model "$(MODEL)" --model-root "$(MODEL_ROOT)" $(HTTP_SMOKE_ARGS)
+
+# Real-model regression of the fork's --power: a throttled server's greedy
+# text must be identical to an unthrottled one's, on two committed fixtures
+# that once caught a throttle that resliced prefill (power_identity_real.py).
+# Each power level runs in a fresh server process, so each fixture prompt is
+# that process's first, cold request.
+test-power-real: preflight $(TARGET) verify-build-identity
+	TRANSFORMERS_VERBOSITY=error $(PYTHON) dev/tests/power_identity_real.py \
+		--model "$(MODEL)" --model-root "$(MODEL_ROOT)"
+
+# The in-worktree Hugging Face home evidence gathering points HF_HOME at, so
+# its Hub cache is this machine's shared one instead of a fresh per-run copy
+# (DEVELOPMENT.md, Validation evidence). Idempotent, and the repository's
+# no-mistakes preparation step, which runs before the first configured command
+# in a run worktree that starts without build/.
+HF_HOME_LINK := $(BUILD)/test-hf-home
+test-hf-home:
+	@set -eu; \
+	shared=$${HF_HOME:-$$HOME/.cache/huggingface}; \
+	case $$shared in /*) ;; *) \
+		echo "error: HF_HOME must be an absolute path: $$shared" >&2; exit 1;; \
+	esac; \
+	if test -e "$$shared" && ! test -d "$$shared"; then \
+		echo "error: the shared Hugging Face home is not a directory: $$shared" >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$$shared"; \
+	shared_physical=$$(cd -P -- "$$shared" && pwd -P); \
+	if test -e "$(HF_HOME_LINK)" && ! test -L "$(HF_HOME_LINK)"; then \
+		echo "error: $(HF_HOME_LINK) is not a symbolic link; remove it so evidence gathering reuses the shared cache" >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(BUILD)"; \
+	ln -sfn "$$shared" "$(HF_HOME_LINK)"; \
+	resolved=$$(cd -P -- "$(HF_HOME_LINK)" && pwd -P); \
+	test "$$resolved" = "$$shared_physical" || { \
+		echo "error: $(HF_HOME_LINK) does not resolve to $$shared_physical; remove it and rerun" >&2; \
+		exit 1; \
+	}; \
+	echo "$(HF_HOME_LINK) -> $$shared"; \
+	echo "model loads: HF_HOME=$(HF_HOME_LINK) (or HF_HUB_CACHE=$(HF_HOME_LINK)/hub)"
 
 # Finds the selected clients and runs test_clients.py's tests of the installed
 # OpenCode, Codex and Pi among them, which need no model.
@@ -185,6 +227,7 @@ release-check: preflight
 	$(MAKE) --no-print-directory test-http-real
 	$(MAKE) --no-print-directory test-http-real \
 		HTTP_SMOKE_ARGS="--persistent-cache --max-cache-disk 8G"
+	$(MAKE) --no-print-directory test-power-real
 	$(MAKE) --no-print-directory test-performance-real
 	@test -z "$$(git status --porcelain)" || { \
 		echo "error: release checkout is not clean" >&2; \

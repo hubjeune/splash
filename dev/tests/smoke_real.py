@@ -93,9 +93,11 @@ class RealServer:
         arguments,
         *,
         cache_dir: Path | None = None,
+        power: int = 100,
     ):
         """A server of arguments.model_root, with a persistent cache in
-        cache_dir when one is given."""
+        cache_dir when one is given, serving at --power `power` when it is
+        not 100."""
         model_root = arguments.model_root.resolve()
         binary = arguments.binary.resolve()
         self.port = available_port()
@@ -129,6 +131,8 @@ class RealServer:
         if arguments.max_image_pixels is not None:
             command.extend(("--max-image-pixels", str(arguments.max_image_pixels)))
         command.extend(("--kv-format", arguments.kv_format))
+        if power != 100:
+            command.extend(("--power", str(power)))
         self.process = subprocess.Popen(
             command,
             cwd=ROOT,

@@ -76,6 +76,7 @@ MLX_QUANTIZATION_FIXTURE := dev/tests/fixtures/mlx-quantization/fixture.json
 # An MLX config.json and a DFlash2 draft config built like each family's.
 MODEL_CONFIGS := dev/tests/fixtures/model-configs
 TEST_KV_PAGE_CACHE_TEST := $(ENGINE_TEST_BUILD)/kv-page-cache
+TEST_THROTTLE_TEST := $(ENGINE_TEST_BUILD)/power-throttle
 TEST_ENGINE_CACHE_TEST := $(ENGINE_TEST_BUILD)/engine-cache
 TEST_DRAFT_CONTEXT_PLAN_TEST := $(ENGINE_TEST_BUILD)/draft-context-plan
 TEST_RAGGED_SCHEDULER_TEST := $(ENGINE_TEST_BUILD)/ragged-scheduler
@@ -155,6 +156,7 @@ TEST_CPU_TARGETS := $(TEST_SLOT_FILE) $(TEST_CACHE_DIRECTORY) $(TEST_DISK_SPACE)
 	$(TEST_MODEL_EXECUTION_PLANS) \
 	$(TEST_MEMORY_TEST) \
 	$(TEST_KV_PAGE_CACHE_TEST) \
+	$(TEST_THROTTLE_TEST) \
 	$(TEST_ENGINE_CACHE_TEST) \
 	$(TEST_PERSISTENT_CACHE) \
 	$(TEST_DRAFT_CONTEXT_PLAN_TEST) \
@@ -248,6 +250,8 @@ $(TEST_MEMORY_TEST): runtime/metal/DeviceCapabilities.cpp \
 $(TEST_KV_PAGE_CACHE_TEST): runtime/engine/KvPool.cpp \
 		runtime/engine/KvCache.cpp \
 		dev/tests/engine/kv_page_cache_test.cpp
+$(TEST_THROTTLE_TEST): dev/tests/engine/throttle_test.cpp | $(ENGINE_TEST_BUILD)
+	$(RUN_CONFIGURED) $(CXX) $(ENGINE_TEST_CXXFLAGS) $< -o $@
 $(TEST_DRAFT_CONTEXT_PLAN_TEST): runtime/model/DraftContextPlan.cpp \
 		dev/benchmarks/PrefillWork.hpp \
 		dev/tests/engine/draft_context_plan_test.cpp
@@ -477,6 +481,7 @@ test-engine-cpu: $(TEST_CPU_TARGETS) $(TEST_ATTENTION_SWEEP)
 	$(TEST_MODEL_EXECUTION_PLANS)
 	$(TEST_MEMORY_TEST)
 	$(TEST_KV_PAGE_CACHE_TEST)
+	$(TEST_THROTTLE_TEST)
 	$(TEST_ENGINE_CACHE_TEST)
 	$(TEST_PERSISTENT_CACHE)
 	$(TEST_DRAFT_CONTEXT_PLAN_TEST)

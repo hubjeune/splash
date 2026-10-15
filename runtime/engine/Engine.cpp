@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -60,7 +62,8 @@ std::string resourceTimeoutMessage(metal::AllocationFailure failure) {
 Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
                EngineEventSink &events)
     : config_(config), cache_(cache), writeBehind_(cache), model_(model),
-      events_(events), scheduler_(config_.decodeShare) {
+      events_(events), throttle_(config_.powerPercent, config_.cancelled),
+      scheduler_(config_.decodeShare) {
   if (!config_.maxContext || !config_.vocabularySize) {
     throw std::invalid_argument("context and vocabulary sizes must be positive");
   }
@@ -257,6 +260,14 @@ bool Engine::tick(double now) {
           now - command.startedMilliseconds,
           command.ticket->prefillTimingIsRepresentative(), now);
     busySinceMilliseconds_ = now;
+    // splash-m5 --power: tokens and cache state land before the pause, so a
+    // client sees the completed work at once. The duty-cycle pause then
+    // paces the next GPU command: a plan ready at this safe point means the
+    // engine has work to leave hot, and no plan means it is idle and must
+    // not sleep. The default power 100 never reaches here.
+    if (throttle_.throttling() && !command.plan.empty() &&
+        scheduler_.next(std::span<const uint64_t>{}))
+      throttle(command.plan, command.ticket->wallMilliseconds());
     sweepTerminal();
     return true;
   }
@@ -1266,6 +1277,65 @@ void Engine::publishReachedStateBoundaries(
   }
 }
 
+namespace {
+
+// splash-m5 copy rule (TensorFold's): SPLASH_M5_COPY_MIN_MATCH=N turns the
+// rule on (0: off; N unset defaults to the fork's 16). When the last N
+// committed tokens occurred earlier in the request (prompt or output), the
+// next verify drafts the (up to 7) tokens that followed that occurrence
+// instead of DFlash's proposals. Matches longer than the draft's whole
+// window buy nothing beyond the first 7 accepted tokens.
+uint32_t copyMinMatch() {
+  static const uint32_t value = [] {
+    const char *text = std::getenv("SPLASH_M5_COPY_MIN_MATCH");
+    return text && *text ? static_cast<uint32_t>(std::strtoul(text, nullptr, 10))
+                         : 16u;
+  }();
+  return value;
+}
+
+uint64_t windowHash(const uint32_t *tokens, uint32_t count) {
+  uint64_t hash = 1469598103934665603ull;
+  for (uint32_t i = 0; i < count; ++i) {
+    hash ^= tokens[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+} // namespace
+
+void Engine::fillCopyDraft(Request &active, ModelBatchItem &item) {
+  const uint32_t window = copyMinMatch();
+  const std::vector<uint32_t> &tokens = active.exactTokens;
+  const size_t size = tokens.size();
+  if (!window || size <= window)
+    return;
+  // Index every window that ends before the current one (which ends at size).
+  for (size_t end = std::max<size_t>(active.copyIndexedEnd, window); end < size; ++end)
+    active.copyIndex[windowHash(&tokens[end - window], window)] = static_cast<uint32_t>(end);
+  active.copyIndexedEnd = size;
+  const auto found = active.copyIndex.find(windowHash(&tokens[size - window], window));
+  if (found == active.copyIndex.end())
+    return;
+  const size_t follow = found->second;
+  if (!std::equal(tokens.begin() + (follow - window), tokens.begin() + follow,
+                  tokens.begin() + (size - window)))
+    return;  // a hash collision
+  const size_t length = std::min<size_t>(item.copyTokens.size(), size - follow);
+  std::copy_n(tokens.begin() + follow, length, item.copyTokens.begin());
+  item.copyLength = static_cast<uint32_t>(length);
+  if (const char *path = std::getenv("SPLASH_M5_COPY_DEBUG")) {  // "C id size length tokens..."
+    static FILE *debug = std::fopen(path, "a");
+    if (debug) {
+      std::fprintf(debug, "C %llu %zu %zu", static_cast<unsigned long long>(active.request.id), size, length);
+      for (size_t k = 0; k < length; ++k) std::fprintf(debug, " %u", item.copyTokens[k]);
+      std::fprintf(debug, "\n");
+      std::fflush(debug);
+    }
+  }
+}
+
 Engine::Prepared Engine::prepare(BatchPlan &plan, std::vector<ModelBatchItem> &items,
                                  std::vector<std::vector<Capture>> &captures, double now) {
   const bool prefill = plan.kind == WorkKind::Prefill;
@@ -1348,6 +1418,8 @@ Engine::Prepared Engine::prepare(BatchPlan &plan, std::vector<ModelBatchItem> &i
             std::span<const uint32_t>(active.exactTokens)
                 .subspan(scheduled.promptOffset, scheduled.tokenCount);
         item.stateCaptures = std::move(states[index]);
+      } else if (active.request.constraint == ConstraintMode::None) {
+        fillCopyDraft(active, item);
       }
       items.push_back(std::move(item));
     }
@@ -2028,6 +2100,20 @@ Engine::LaneEnd Engine::capacityExhausted(std::string_view what,
   if (!detail.empty())
     message += " (" + std::string(detail) + ")";
   return {LaneOutcome::CapacityExhausted, std::move(message)};
+}
+
+void Engine::throttle(const BatchPlan &plan, double wallMilliseconds) {
+  // One command-completion safe point owns the GPU duty cycle. The work kind
+  // keeps a prefill's interval out of a decode's sleep budget, as DwarfStar4
+  // keeps its layer and decoded-token averages apart. The throttle paces by
+  // sleeping between the commands power 100 runs, never by reslicing them:
+  // the prefill path's floating-point kernels are not bit-invariant to a
+  // command's row budget, so a finer split would change decoded output at
+  // decoding ties. dev/tests/engine/native_engine_loop_test.cpp holds it to
+  // the same prefill decomposition as power 100.
+  throttle_.noteWork(plan.kind == WorkKind::Prefill ? ThrottleWorkKind::Prefill
+                                                    : ThrottleWorkKind::Decode,
+                     wallMilliseconds);
 }
 
 void Engine::finish(Request &active, EngineFinishReason reason,

@@ -1626,3 +1626,31 @@ kernel void decode_accept_dflash(
                        accepted_count[batch], lane_params);
   }
 }
+
+// splash-m5 copy rule (TensorFold's): a lane whose recent tokens occurred
+// earlier in its request drafts what followed them there, so repetition of
+// whole regions (file edits, repeated structure) verifies in one DFlash
+// cycle instead of one token at a time. The draft distribution at a copied
+// position is one-hot (q = 1 on the copied token), so greedy and sampled
+// acceptance stay exact: the rejected-draft lookup returns the one-hot
+// probability, and greed keeps comparing tokens. The copied tokens are the
+// continuation the target usually re-emits, so acceptance keeps them all.
+kernel void m5_copy_override(device uint *proposed [[buffer(0)]],
+                             device uint *candidates [[buffer(1)]],
+                             device float *probabilities [[buffer(2)]],
+                             constant CopyOverrideParams &params [[buffer(3)]],
+                             uint index [[thread_position_in_grid]]) {
+  constexpr uint Positions = SPLASH_DRAFT_PROPOSAL_TOKENS;
+  const uint lane = index / Positions, position = index % Positions;
+  if (lane >= params.lanes || position >= params.lengths[lane])
+    return;
+  const uint token = params.tokens[lane * Positions + position];
+  const uint slot = lane * Positions + position;
+  proposed[slot] = token;
+  device uint *ids = candidates + slot * SPLASH_DRAFT_CANDIDATES;
+  device float *q = probabilities + slot * SPLASH_DRAFT_CANDIDATES;
+  ids[0] = token;
+  q[0] = 1.0f;
+  for (uint i = 1; i < SPLASH_DRAFT_CANDIDATES; ++i)
+    q[i] = 0.0f;
+}

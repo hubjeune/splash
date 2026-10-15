@@ -97,6 +97,7 @@ access.
 | `--max-context` | Auto | Set the context limit, e.g. `100K`. See [memory and context](#memory-and-context). |
 | `--kv-format` | `int8` | Target KV storage: `int8` or `bf16`. See [KV cache precision](#kv-cache-precision). |
 | `--state-format` | `fp32` | Recurrent state storage: `fp32` or `bf16`. See [state precision](#state-precision). |
+| `--power` | `100` | GPU duty-cycle percentage, `1` to `100`. See [GPU duty cycle](#gpu-duty-cycle). |
 | `--idle-release` | `10m` | Time without a request before the engine unwires its memory and frees the weights; the next request restores them. `off` keeps both, though `POST /v1/memory/release` still frees the weights. See [weight loading](#weight-loading). |
 | `--max-cache-disk` | `auto` | SSD quota for cached KV pages and states: `auto` follows the volume's free space up to 32 GiB, a size such as `16G` sets the quota, `0` turns the cache off. Kept for the session, or across restarts with `--persistent-cache`. See [SSD cache](#ssd-cache). |
 | `--max-cache-disk-writes` | `0` (no limit) | The most the SSD cache writes a day, e.g. `200G`. See [SSD cache](#ssd-cache). |
@@ -235,6 +236,26 @@ last bits ([sampling](#sampling)). Restart to switch
 formats; the SSD cache keeps each format's states apart. Omit `--state-format`
 or use `--state-format fp32` for the default, the precision the models'
 configurations ask for.
+
+### GPU duty cycle
+
+`--power` caps the GPU's duty cycle: the share of wall time the GPU is asked
+to work. After each completed prefill or decode command with more work ready,
+the engine sleeps the share of that command kind's smoothed recent work
+interval the percentage leaves, so at `--power 50` a 100 ms command is
+followed by a ~100 ms sleep, and the same request stream serves at half the
+GPU's sustained load — less heat, fan noise and battery drain — and roughly
+half the rate. Power 100, the default, is a strict no-op.
+
+The pause paces by sleeping between the same commands power 100 runs, never
+by reslicing them: the prefill path's floating-point kernels are not
+bit-invariant to a command's row budget, so a finer split would change
+decoded output at decoding ties. Every level therefore dispatches exactly
+the prefill rows power 100 dispatches — `dev/tests/engine/native_engine_loop_test.cpp`
+holds it to that — and `make test-power-real` holds a real model's greedy
+text byte-identical between `--power 100` and `--power 50`, each level in a
+fresh server process. The sleep re-checks the process's shutdown predicate
+in bounded slices, so a stop signal is never held behind it.
 
 ### SSD cache
 
@@ -1000,7 +1021,10 @@ Images arrive inline as base64 `data:` URLs: Chat `image_url` parts, Responses
 `input_image` items and Messages `image` blocks with a `base64` source; an image
 URL to fetch returns 400. JPEG, PNG, WebP and GIF decode. An image file may
 hold up to 32 MiB and 33,554,432 pixels, with an aspect ratio up to 200:1, and
-is resized to at most `--max-image-pixels` (4,194,304 by default). A request
+is resized to at most `--max-image-pixels` (4,194,304 by default). This fork
+pads a thinner strip onto a white canvas up to that guard instead of rejecting
+it: a rejected image stays in a client's conversation history and fails every
+later turn of it. A request
 carries at most 64 images, PDF pages included.
 
 PDFs arrive inline too: Chat `file` parts with `file_data`, Responses
@@ -1458,6 +1482,16 @@ each projection into af4g64 planes, 4 bits in groups of 64 as MLX's affine
 quantization rounds them, and copies every other tensor as stored. The draft
 runs on the block kernels its target's projections run on.
 
+This fork also gives unconstrained decodes a speculative copy rule: when the
+request's last `SPLASH_M5_COPY_MIN_MATCH` committed tokens (default 16,
+`0` off) occurred earlier in the request, its prompt or its output, the next
+draft proposes the tokens that followed that occurrence instead of the
+proposal distribution's — written over DFlash's proposals and candidates as a
+one-hot draft distribution (`m5_copy_override`), so acceptance stays exact
+and a repeated region (a whole-file re-edit, a re-sent block) verifies in one
+cycle where it would otherwise re-verify token by token. A lane whose
+thinking is ending keeps the end drafts its cutoff wrote.
+
 ### Vision
 
 Vision comes from the target repository: MLX's `vision_tower.*` tensors (or
@@ -1513,6 +1547,13 @@ The tokenizer and configuration are derived from the downloaded file once and
 cached under `models/.metadata`, keyed by the size and digest of each source
 GGUF, the SHA-256 of `gguf.py` and the `tokenizers` version; publication is
 atomic and entries are hash-checked on use.
+
+This fork also puts back the installed tokenizer.json's own pre-tokenizer
+(`server/tokenization.py:restore_pretokenizer`) when transformers'
+`Qwen2Tokenizer` reconstructs one from Qwen2's split pattern that lacks the
+combining-mark class (`\p{M}`) of Qwen3.x's tokenizer.json: without the
+restore, Hindi, Thai and vowelled Arabic split into more tokens than the
+model was trained on.
 
 Request preparation merges the leading system and developer messages into one
 system message, joined by a blank line: Responses instructions and developer
@@ -2604,6 +2645,7 @@ does, and `REVISION`, `DRAFT_MODEL` and `LANGUAGE_ONLY=1` as its `--revision`,
 | `verify-models` | the installer's restarts without the Hub, `verify --full`, and the record of the weight images (`dev/tools/installer_restarts.py`, `weight-digests`, [Release check](#release-check)) |
 | `test-real` | vision parity with the family's fixture in `dev/tests/fixtures/vision-parity/` when the installation serves vision, and the native model runtime oracle |
 | `test-http-real` | the HTTP frontend on an isolated server (`dev/tests/smoke_real.py`); with `HTTP_SMOKE_ARGS="--persistent-cache --max-cache-disk 8G"`, instead of that smoke, the [persistent cache](#persistent-cache) across a restart in a fresh cache directory: a clean stop, a restart that takes the restore point back, and a next turn that restores the prompt from disk; `release-check` runs both |
+| `test-power-real` | that `--power 50` decodes byte-identically to `--power 100` on the committed decoding-tie fixtures, each power level in a fresh server (`dev/tests/power_identity_real.py`, [GPU duty cycle](#gpu-duty-cycle)); `release-check` runs it |
 | `test-agent-real` | the five official clients through `splash serve` (`dev/tests/agent_real.py`), in `AGENT_SCENARIO` `complete` (the default) or `smoke` |
 | `test-release-real` | the HTTP smoke and all five clients on one `splash serve` |
 | `test-performance-real` | the native decode, partial-prefix and short-prompt benchmark, or with `BASELINE` its ABBA comparison with that build (`dev/benchmarks/backend_regression.py`) |
@@ -2635,6 +2677,28 @@ The models they are run with, one per family and source format:
 
 Both source formats load into the block layout of the GGUF projection and MoE
 kernels, an MLX target in its MLX formats, a GGUF target in its GGUF ones.
+
+### Validation evidence
+
+An isolated `HF_HOME` keeps a validation run's Hub cache out of the shared
+one, but a fresh home makes every model load download its weights again.
+Point it at `build/test-hf-home`, which `make test-hf-home` links to this
+machine's shared Hugging Face home (`${HF_HOME:-$HOME/.cache/huggingface}`),
+so the load reads and writes that cache instead:
+
+```sh
+make test-hf-home                    # idempotent
+HF_HOME=build/test-hf-home HF_HUB_OFFLINE=1 ./splash serve --model OWNER/REPO
+```
+
+A run worktree starts without `build/`, so `make test-hf-home` creates the
+link there; `HF_HUB_CACHE=build/test-hf-home/hub` selects the same cache when
+only the Hub cache is relocated. Pre-warm the revisions a run needs, then set
+`HF_HUB_OFFLINE=1` once they are cached: the load then proves it reads the
+shared cache and downloads nothing. A load that cannot resolve from the
+cache fails instead of fetching, which is the evidence that no re-download
+happens. `dev/tests/test_validation_environment.py` holds the link's
+behaviour to that contract.
 
 On a 24 GB Mac, `test-agent-real` stops a client's workflow at macOS's warning
 memory pressure, which the smaller GGUF variants such a Mac uses can reach under
@@ -2692,6 +2756,8 @@ the other. Per model, `release-check`:
 - stops and restarts a server with a [persistent cache](#persistent-cache),
   and requires the conversation's next turn to restore its prompt from disk
   (`test-http-real` with `HTTP_SMOKE_ARGS="--persistent-cache --max-cache-disk 8G"`);
+- holds `--power 50` to `--power 100`'s greedy text on the committed
+  fixtures, each level in a fresh server process (`test-power-real`);
 - compares this build with `BASELINE`, which must have another build
   identity, in ABBA order (`test-performance-real`), every round after the
   first to report a [Neural Engine share](#neural-engine-prefill) running that

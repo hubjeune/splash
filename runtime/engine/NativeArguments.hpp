@@ -53,6 +53,9 @@ struct NativeArguments final {
   // Neural Engine when that is faster (splash serve --disable-ane turns it
   // off).
   bool neuralEngine = true;
+  // --power PERCENT, the GPU duty cycle in [1, 100] (Throttle.hpp); the
+  // default of 100 is unthrottled.
+  uint32_t powerPercent = kUnthrottledPowerPercent;
 };
 
 // Reads `serve-native MODEL_DIRECTORY MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto

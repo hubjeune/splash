@@ -239,6 +239,35 @@ void testPromptProgress() {
           "cancelled prefill published further progress");
 }
 
+// The duty-cycle throttle paces prefill by sleeping at command boundaries,
+// not by reslicing commands: the prefill path's floating-point kernels are
+// not bit-invariant to a command's row budget, so a finer split changes
+// decoded output at decoding ties (dev/tests/power_identity_real.py holds
+// the decoded text itself to --power 50 == --power 100). Every power level
+// must therefore dispatch exactly the rows power 100 dispatches.
+void testPowerKeepsPrefillDecomposition() {
+  const auto prefillCommands = [](uint32_t powerPercent) {
+    engine::NativeLoopConfig config;
+    config.engine.maxContext = 8192;
+    config.engine.powerPercent = powerPercent;
+    LoopFixture fixture(config, {.pages = 512});
+    engine::NativeRuntime &loop = fixture.loop;
+    loop.announceReady();
+    auto input = request(1, 4);
+    input.promptTokens.resize(4097);
+    for (uint32_t i = 0; i < input.promptTokens.size(); ++i)
+      input.promptTokens[i] = i + 1;
+    require(loop.receive(protocol::peer::serialize(input)),
+            "power request failed");
+    runUntilIdle(loop);
+    return fixture.executor.prefillCommandRows;
+  };
+  const std::vector<uint32_t> unthrottled = prefillCommands(100);
+  const std::vector<uint32_t> throttled = prefillCommands(50);
+  require(!unthrottled.empty() && throttled == unthrottled,
+          "the throttle changed the prefill command decomposition");
+}
+
 // /status active_requests: a live request's phase, prompt progress, output
 // budget and age since its arrival, until it finishes.
 void testSnapshotReportsLiveRequests() {
@@ -2040,6 +2069,7 @@ int main() {
     testRequestFlagsReachTheModel();
     testSamplingReachesTheModel();
     testPromptProgress();
+    testPowerKeepsPrefillDecomposition();
     testCapacityFailureHasOneTerminalFrame();
     testFatalFramingClosesConnection();
     testInvalidLimitsAreRejectedAtConstruction();

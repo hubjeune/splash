@@ -338,6 +338,10 @@ public:
       state.position += item.tokenCount;
       prefillRows += item.tokenCount;
       ++prefillChunks[item.requestId];
+      // Actual rows of every model prefill command item, in dispatch order:
+      // the duty-cycle test compares the decomposition power 100 plans with
+      // a throttled one's.
+      prefillCommandRows.push_back(item.tokenCount);
       const uint64_t end = item.logicalPosition + item.tokenCount;
       std::vector<std::shared_ptr<const CompositeState>> captured;
       uint64_t after = item.logicalPosition;
@@ -662,6 +666,7 @@ public:
   std::function<bool()> beginGrowthBlocked;
   std::vector<std::vector<uint32_t>> resumedPrompts;
   std::vector<uint32_t> prefillWidths;
+  std::vector<uint32_t> prefillCommandRows;
   bool restoredDraft = false;
   metal::AllocationFailure beginAllocationFailure =
       metal::AllocationFailure::EngineBudget;

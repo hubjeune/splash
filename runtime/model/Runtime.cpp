@@ -1824,6 +1824,43 @@ struct Runtime::Impl {
                              decodeArena->batchSlice(output, lanes), rows);
   }
 
+  // splash-m5 copy rule: lanes the engine gave a copy draft (Engine
+  // ::fillCopyDraft, unconstrained decodes only) replace their proposals,
+  // and the target reads a one-hot q for every copied position, so sampled
+  // acceptance reduces to the target's own draw and greedy acceptance keeps
+  // comparing tokens. The copy begins with its prediction of the pending
+  // anchor, so it drafts only where that was right; a lane whose
+  // end-of-thinking drafts already replaced its proposals keeps them.
+  void encodeBatchCopyOverride(CommandGraph &graph,
+                               std::span<DecodeLaneResult> lanes,
+                               std::span<const ModelBatchItem> items) {
+    const uint32_t width = static_cast<uint32_t>(lanes.size());
+    if (lanes.empty() || lanes.size() > kLaneCount || lanes.size() != items.size())
+      throw std::invalid_argument("invalid copy override batch");
+    CopyOverrideParams copy{};
+    copy.lanes = width;
+    bool copying = false;
+    for (uint32_t lane = 0; lane < width; ++lane) {
+      const ModelBatchItem &item = items[lane];
+      Request &entry = *lanes[lane].request;
+      const bool aligned = item.copyLength >= 2 && entry.pendingToken &&
+                           item.copyTokens[0] == *entry.pendingToken &&
+                           !lanes[lane].endDrafts;
+      const uint32_t length =
+          aligned ? std::min<uint32_t>(item.copyLength - 1, kDraftProposalTokens) : 0;
+      copy.lengths[lane] = length;
+      for (uint32_t k = 0; k < length; ++k)
+        copy.tokens[lane * kDraftProposalTokens + k] = item.copyTokens[k + 1];
+      copying = copying || length;
+    }
+    if (!copying)
+      return;
+    sampling.addCopyOverride(
+        graph, decodeArena->batchSlice(DecodeTensor::ProposedTokens, width),
+        decodeArena->batchSlice(DecodeTensor::Candidates, width),
+        decodeArena->batchSlice(DecodeTensor::ProposalProbs, width), copy);
+  }
+
   void encodeBatchVerifyInput(CommandGraph &graph, uint32_t lanes) {
     if (!lanes || lanes > kLaneCount)
       throw std::invalid_argument("invalid verify-input batch width");
@@ -2634,6 +2671,7 @@ Runtime::decodeAsync(const BatchPlan &plan,
     return std::make_unique<Impl::ConstrainedDecodeTicket>(
         *impl_, std::move(lanes), items, commandGraph, std::move(completion));
   }
+  impl_->encodeBatchCopyOverride(commandGraph, lanes, items);
   impl_->encodeBatchVerifyInput(commandGraph, width);
   impl_->encodeBatchEmbedding(commandGraph, DecodeTensor::InputTokens,
                               DecodeTensor::Hidden0, width);

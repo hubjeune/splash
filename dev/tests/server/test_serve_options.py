@@ -131,6 +131,11 @@ OPTIONS = {
         {"0": 0.0, "0.25": 0.25, "2": 2.0},
         ("-0.5", "inf", "nan", "half"),
     ),
+    "--power": values(
+        "--power",
+        {"1": 1, "100": 100, "50": 50},
+        ("0", "101", "-1", "50.0", "1e2", "many"),
+    ),
     "--allowed-host": values(
         "--allowed-host", {"proxy.example": "proxy.example"}, (), repeatable=True
     ),

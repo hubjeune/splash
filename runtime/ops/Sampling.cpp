@@ -349,6 +349,22 @@ void Sampling::addThinkingDrafts(metal::CommandGraph &graph, std::span<const Sam
             {1, 1, 1});
 }
 
+// splash-m5 copy rule (Runtime.cpp's encodeBatchCopyOverride).
+void Sampling::addCopyOverride(metal::CommandGraph &graph, metal::MetalBuffer proposedTokens,
+                               metal::MetalBuffer candidates, metal::MetalBuffer proposalProbabilities,
+                               const CopyOverrideParams &params) const {
+  if (!params.lanes || params.lanes > kMaximumLanes)
+    throw std::invalid_argument("invalid copy override batch");
+  const uint64_t positions = uint64_t{params.lanes} * SPLASH_DRAFT_PROPOSAL_TOKENS;
+  requireBytes(proposedTokens, positions * sizeof(uint32_t), "proposed token");
+  requireBytes(candidates, positions * SPLASH_DRAFT_CANDIDATES * sizeof(uint32_t), "draft candidates");
+  requireBytes(proposalProbabilities, positions * SPLASH_DRAFT_CANDIDATES * sizeof(float),
+               "draft proposal probability");
+  graph.add("m5_copy_override",
+            {std::move(proposedTokens), std::move(candidates), std::move(proposalProbabilities)},
+            params, {positions, 1, 1}, {1, 1, 1});
+}
+
 void Sampling::addAcceptance(
     metal::CommandGraph &graph, AcceptanceBuffers buffers,
     std::span<const uint32_t> maximumRetained,

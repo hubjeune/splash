@@ -4,6 +4,7 @@
 #include "engine/Cache.hpp"
 #include "engine/MemoryGovernor.hpp"
 #include "engine/Scheduler.hpp"
+#include "engine/Throttle.hpp"
 #include "engine/Types.hpp"
 #include "engine/WriteBehind.hpp"
 
@@ -61,6 +62,13 @@ struct EngineConfig final {
   // which the pause does not hold back, or clears the mark, and returns the
   // mark it replaced (MemoryGovernor::setServing).
   std::function<bool(bool)> serving;
+  // GPU duty-cycle target, in [1, 100]; the default is unthrottled. The
+  // engine is its only owner and applies it at the command-completion safe
+  // point, never while idle.
+  uint32_t powerPercent = kUnthrottledPowerPercent;
+  // Startup abort/shutdown predicate for a bounded throttle sleep, so a stop
+  // signal is never held behind a duty-cycle sleep. Empty means none.
+  std::function<bool()> cancelled;
 };
 
 // While an active one lives, allocations are memory a request in service
@@ -329,6 +337,11 @@ private:
     // The prompt from submit on, then the committed output; request.prompt
     // is empty.
     std::vector<uint32_t> exactTokens;
+    // splash-m5 copy rule: the continuation start of the most recent earlier
+    // occurrence of each SPLASH_M5_COPY_MIN_MATCH-token window of exactTokens,
+    // by window hash.
+    std::unordered_map<uint64_t, uint32_t> copyIndex;
+    size_t copyIndexedEnd = 0;
     // The first output token, sent to the client when the prefill selected it
     // (ModelStepResult::firstToken) and until the first decode cycle commits
     // it: that cycle emits it first, and its event leaves it out.
@@ -489,6 +502,13 @@ private:
   [[nodiscard]] Prepared prepare(BatchPlan &plan, std::vector<ModelBatchItem> &items,
                                  std::vector<std::vector<Capture>> &captures,
                                  double nowMilliseconds);
+  // splash-m5 copy rule: fills item.copyTokens with the (up to 7 tokens of
+  // the) continuation of the most recent earlier occurrence of the request's
+  // last SPLASH_M5_COPY_MIN_MATCH committed tokens, so the next decode drafts
+  // it instead of the draft model's proposals (exactly, through the one-hot
+  // override). Nothing when the request is constrained or no earlier
+  // occurrence exists.
+  void fillCopyDraft(Request &request, ModelBatchItem &item);
   // Reserves the buffers of the states a prefill lane's command reaches,
   // boundary by boundary, and the KV up to the next one; returns the rows
   // the command keeps. It ends at the first boundary whose buffers or
@@ -631,6 +651,10 @@ private:
              std::span<const ModelStepResult> results, double wallMilliseconds,
              double cycleMilliseconds, bool representativePrefillTiming,
              double nowMilliseconds);
+  // The GPU duty-cycle safe point: a batch that finished with more work
+  // ready has its measured interval smoothed and its sleep applied before
+  // the engine runs the next command.
+  void throttle(const BatchPlan &plan, double wallMilliseconds);
   // Whether the command in flight holds the request's lane.
   [[nodiscard]] bool inFlight(uint64_t requestId) const;
   // Ends a request early. While its command or restore runs, the first end
@@ -665,6 +689,7 @@ private:
   WriteBehind writeBehind_;
   model::Model &model_;
   EngineEventSink &events_;
+  GpuThrottle throttle_;
   Scheduler scheduler_;
   std::unordered_map<uint64_t, Request> requests_;
   // Pressure preempted work, a lane is still resident, and memory is still

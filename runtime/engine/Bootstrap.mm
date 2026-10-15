@@ -340,6 +340,10 @@ std::unique_ptr<RuntimeBootstrap> RuntimeBootstrap::start(
   try {
     connectToGovernor(config.nativeLoop.engine, resources->memoryGovernor());
     config.nativeLoop.weights = &resources->releasableMemory();
+    // splash-m5 --power: a duty-cycle sleep re-checks the process's own
+    // abort predicate, so a stop signal cut through it as it cuts through a
+    // wait.
+    config.nativeLoop.engine.cancelled = config.resources.cancelled;
     config.nativeLoop.weightAdmission = resources->memoryGovernor().allocationAdmission();
     // The parser and engine consume the same resolved ceiling. In automatic
     // mode it cannot be known until resource planning has measured the device.

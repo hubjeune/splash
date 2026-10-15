@@ -1,5 +1,6 @@
 #pragma once
 
+#include "metal/abi/ExecutionGeometry.h"
 #include "ops/PagedKv.hpp"
 #include "ops/Vision.hpp"
 #include "model/StateTransfer.hpp"
@@ -352,6 +353,13 @@ struct ModelBatchItem final {
   uint64_t pageTableRevision = 0;
   uint32_t pageTableFirstChanged = 0;
   std::span<const uint32_t> inputTokens{};
+  // splash-m5 copy rule (decode only): the continuation of an earlier
+  // occurrence of the request's last committed tokens. The engine's history
+  // ends before the pending anchor, so copyTokens[0] predicts the anchor:
+  // the runtime uses the copy only when it equals the anchor, and drafts
+  // copyTokens[1..copyLength) (Engine::fillCopyDraft decides).
+  std::array<uint32_t, SPLASH_DRAFT_PROPOSAL_TOKENS + 1> copyTokens{};
+  uint32_t copyLength = 0;
   // A prefill chunk's states to capture, ascending: page-aligned boundaries in
   // (logicalPosition, logicalPosition + tokenCount], each one where the
   // request's draft context plan leaves a whole draft window.

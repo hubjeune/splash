@@ -152,6 +152,10 @@ void testServerCommandLines(const char *path) {
        [](NativeArguments &read) { read.maxImagePatches = 16384; }},
       {"idle_sleep", [](NativeArguments &read) { read.preventIdleSleep = false; }},
       {"disable_ane", [](NativeArguments &read) { read.neuralEngine = false; }},
+      // --power reaches the engine only when it is not the default, and
+      // power 100, the unthrottled default, is the server's own default.
+      {"power", [](NativeArguments &read) { read.powerPercent = 50; }},
+      {"power_default", [](NativeArguments &) {}}, 
       // A relaunch keeps the first engine's context; with --max-context,
       // which every start holds, its command is the first one's.
       {"relaunch", [](NativeArguments &read) { read.relaunchContext = 61433; }},
@@ -172,6 +176,7 @@ void testServerCommandLines(const char *path) {
            read.persistentCache == meant.persistentCache && read.cacheRoot == meant.cacheRoot &&
            read.kvFormat == meant.kvFormat && read.stateFormat == meant.stateFormat &&
            read.decodeShare == meant.decodeShare &&
+           read.powerPercent == meant.powerPercent &&
            read.maxImagePatches == meant.maxImagePatches &&
            read.idleReleaseSeconds == meant.idleReleaseSeconds &&
            read.preventIdleSleep == meant.preventIdleSleep &&
@@ -219,6 +224,16 @@ void testRefusals() {
   for (const char *share : {"-1", "nan", "inf", "half"})
     refuses({"auto", "auto", "--decode-share", share},
             "--decode-share requires a nonnegative number");
+  // A duty cycle outside [1, 100], or one that is not an integer, fails
+  // closed. An option's missing value fails its check too.
+  for (const char *power : {"0", "101", "-1", "50.0", "1e2", "50x", ""})
+    refuses({"auto", "auto", "--power", power},
+            "--power requires an integer in [1, 100]");
+  refuses({"auto", "auto", "--power"}, "--power requires an integer in [1, 100]");
+  require(parse(model, {"auto", "auto", "--power", "1"}).powerPercent == 1 &&
+              parse(model, {"auto", "auto", "--power", "50"}).powerPercent == 50 &&
+              parse(model, {"auto", "auto"}).powerPercent == 100,
+          "--power did not reach the arguments as given");
   for (const char *patches : {"0", "6", "16388"})
     refuses({"auto", "auto", "--max-image-patches", patches},
             "--max-image-patches requires a positive multiple of 4");

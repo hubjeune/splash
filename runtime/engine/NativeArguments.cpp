@@ -78,6 +78,15 @@ double parseDecodeShare(std::string_view value) {
   return result;
 }
 
+// The GPU duty cycle is a percentage, validated once here so the engine's
+// throttle can trust its own config: an out-of-range value fails closed.
+uint32_t parsePowerPercent(std::string_view value) {
+  uint32_t result = 0;
+  if (!parsePositive(value, result) || !validPowerPercent(result))
+    throw UsageError("--power requires an integer in [1, 100]");
+  return result;
+}
+
 std::filesystem::path requireModelRoot(std::string_view argument) {
   std::error_code error;
   const std::filesystem::path root =
@@ -123,6 +132,8 @@ NativeArguments parseNativeArguments(int argc, const char *const *argv) {
           value == "fp32" ? ops::GdnStateFormat::Float32 : ops::GdnStateFormat::BFloat16;
     } else if (option == "--decode-share") {
       result.decodeShare = parseDecodeShare(value);
+    } else if (option == "--power") {
+      result.powerPercent = parsePowerPercent(value);
     } else if (option == "--max-image-patches") {
       result.maxImagePatches = parseMaxImagePatches(value);
     } else if (option == "--persistent-cache") {

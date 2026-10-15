@@ -197,6 +197,14 @@ public:
   void addThinkingDrafts(metal::CommandGraph &graph,
                          std::span<const SamplingPolicy> policies,
                          metal::MetalBuffer proposedTokens) const;
+  // splash-m5 copy rule: overwrite the draft proposals of each lane that gets
+  // a copy draft with copied tokens and a one-hot q (m5_copy_override),
+  // before the verify input is built from them. Lanes whose lengths are zero
+  // keep their draft proposals; an empty batch dispatches nothing.
+  void addCopyOverride(metal::CommandGraph &graph, metal::MetalBuffer proposedTokens,
+                       metal::MetalBuffer candidates,
+                       metal::MetalBuffer proposalProbabilities,
+                       const CopyOverrideParams &params) const;
 
 private:
   // The rows a selection takes from each lane (metal/abi/Sampling.h

@@ -795,6 +795,7 @@ def main_args(**overrides):
             "decode_share": None,
             "disable_ane": False,
             "max_image_pixels": images.MAX_PIXELS,
+            "power": 100,
             "request_timeout": None,
             "queue_size": 1,
             "host": "127.0.0.1",
