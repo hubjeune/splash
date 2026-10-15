@@ -29,6 +29,12 @@ inline constexpr double kThrottleSampleWeight = 0.125;
 // sleep is.
 inline constexpr double kThrottleSleepSliceMilliseconds = 10.0;
 
+// The longest one engine-loop iteration sleeps for the duty cycle. The rest
+// of the owed sleep continues on later iterations, so queued status, cancel
+// and mask frames, admission and deadline handling run between slices
+// instead of waiting out a whole long prefill's pause.
+inline constexpr double kThrottlePauseSliceMilliseconds = 50.0;
+
 [[nodiscard]] constexpr bool validPowerPercent(uint32_t powerPercent) noexcept {
   return powerPercent >= kMinimumPowerPercent &&
          powerPercent <= kMaximumPowerPercent;
@@ -71,8 +77,11 @@ enum class ThrottleWorkKind : uint8_t { Prefill, Decode };
 
 // The engine's one owner of the GPU duty cycle. noteWork runs only at the
 // command-completion safe point, with the completed batch's measured GPU work
-// interval, so an idle engine never sleeps. A bounded slice that finds the
-// abort predicate true ends the sleep at once instead of finishing it.
+// interval, so an idle engine never sleeps. One call sleeps at most one
+// bounded pause slice and leaves the rest owed; the engine pays that
+// remainder in later loop iterations, so queued frames are handled between
+// slices. A slice that finds the abort predicate true drops the remainder at
+// once instead of finishing it.
 //
 // The throttle paces by sleeping between the same prefill commands power 100
 // runs, never by reslicing them: the prefill path's floating-point kernels are
@@ -99,27 +108,55 @@ public:
   }
 
   // Strict no-op at power 100 and without a positive work interval; otherwise
-  // smooths the interval and sleeps its duty cycle in bounded slices. The
-  // abort predicate is checked before the first slice, so a shutdown already
-  // asked for never sleeps at all.
+  // smooths the interval, adds its duty-cycle sleep to the owed total, and
+  // sleeps at most one bounded pause slice. The remainder stays owed for the
+  // engine's later loop iterations. The abort predicate is checked before the
+  // first sleep, so a shutdown already asked for never sleeps at all.
   void noteWork(ThrottleWorkKind kind, double workMilliseconds) {
     if (!throttling()) {
       return;
     }
     double &average = averageFor(kind);
     average = throttleUpdateAverage(average, workMilliseconds);
-    double remaining = throttleSleepMilliseconds(average, powerPercent_);
-    while (remaining > 0.0) {
-      if (cancelled_ && cancelled_()) {
-        return;
-      }
-      const double slice =
-          std::min(remaining, kThrottleSleepSliceMilliseconds);
-      std::this_thread::sleep_for(
-          std::chrono::duration<double, std::milli>(slice));
-      remaining -= slice;
-    }
+    owedSleepMilliseconds_ +=
+        throttleSleepMilliseconds(average, powerPercent_);
+    static_cast<void>(payOwedSleepSlice());
   }
+
+  // Sleeps at most one bounded pause slice of the owed duty-cycle sleep and
+  // returns the milliseconds still owed. The abort predicate is re-checked at
+  // the sleep granularity; a stop drops the whole remainder at once.
+  double payOwedSleepSlice() {
+    if (owedSleepMilliseconds_ <= 0.0) {
+      return 0.0;
+    }
+    if (cancelled_ && cancelled_()) {
+      discardOwedSleep();
+      return 0.0;
+    }
+    double slice =
+        std::min(owedSleepMilliseconds_, kThrottlePauseSliceMilliseconds);
+    while (slice > 0.0) {
+      const double step = std::min(slice, kThrottleSleepSliceMilliseconds);
+      std::this_thread::sleep_for(
+          std::chrono::duration<double, std::milli>(step));
+      slice -= step;
+      owedSleepMilliseconds_ -= step;
+      if (cancelled_ && cancelled_()) {
+        discardOwedSleep();
+        return 0.0;
+      }
+    }
+    owedSleepMilliseconds_ = std::max(0.0, owedSleepMilliseconds_);
+    return owedSleepMilliseconds_;
+  }
+
+  [[nodiscard]] double owedSleepMilliseconds() const noexcept {
+    return owedSleepMilliseconds_;
+  }
+
+  // The engine went idle: the remainder no longer paces work that will run.
+  void discardOwedSleep() noexcept { owedSleepMilliseconds_ = 0.0; }
 
 private:
   [[nodiscard]] double &
@@ -136,6 +173,7 @@ private:
   uint32_t powerPercent_ = kUnthrottledPowerPercent;
   double prefillAverageMilliseconds_ = 0.0;
   double decodeAverageMilliseconds_ = 0.0;
+  double owedSleepMilliseconds_ = 0.0;
   std::function<bool()> cancelled_;
 };
 
