@@ -2700,7 +2700,7 @@ only the Hub cache is relocated. Pre-warm the revisions a run needs, then set
 `HF_HUB_OFFLINE=1` once they are cached: the load then proves it reads the
 shared cache and downloads nothing. A load that cannot resolve from the
 cache fails instead of fetching, which is the evidence that no re-download
-happens. `dev/tests/test_validation_environment.py` holds the link's
+happens. `dev/tests/tools/test_validation_environment.py` holds the link's
 behaviour to that contract.
 
 On a 24 GB Mac, `test-agent-real` stops a client's workflow at macOS's warning
