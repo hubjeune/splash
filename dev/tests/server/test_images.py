@@ -131,6 +131,23 @@ class PrepareTest(unittest.TestCase):
         with self.assertRaisesRegex(images.ImageError, "aspect ratio"):
             images.smart_resize(1, 201, images.MAX_PIXELS)
 
+    def test_thin_strip_padding_is_refused_beyond_the_serving_budget(self):
+        from PIL import Image
+
+        # 8192x17 pads to an 8192x41 white canvas: 335,872 pixels, more than
+        # a 262,144 serving cap but inside the default cap. The cap refuses
+        # the canvas before it is allocated, in either orientation.
+        for width, height in ((8192, 17), (17, 8192)):
+            with self.subTest(shape=(width, height)):
+                payload = png_bytes(width, height)
+                with mock.patch.object(
+                    Image, "new", side_effect=AssertionError("canvas allocated")
+                ):
+                    with self.assertRaisesRegex(images.ImageError, "pixel limit"):
+                        images.prepare(payload, images.MIN_PIXELS * 4)
+                prepared = images.prepare(payload, images.MAX_PIXELS)
+                self.assertGreater(prepared.tokens, 0)
+
     def test_exif_orientation_is_applied_before_resizing(self):
         from PIL import Image
 

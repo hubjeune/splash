@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -274,6 +273,14 @@ bool Engine::tick(double now) {
 
   progressed = admitQueued(now) || progressed;
   sweepTerminal();
+
+  if (throttle_.owedSleepMilliseconds() > 0.0) {
+    if (scheduler_.next(std::span<const uint64_t>{})) {
+      throttle_.payOwedSleepSlice();
+      return true;
+    }
+    throttle_.discardOwedSleep();
+  }
   // Lanes that wait for memory on its way back cannot run before it lands;
   // the command runs the other lanes meanwhile. A plan whose lanes all wait
   // adds them, so each attempt plans without at least one more lane.
@@ -1325,15 +1332,6 @@ void Engine::fillCopyDraft(Request &active, ModelBatchItem &item) {
   const size_t length = std::min<size_t>(item.copyTokens.size(), size - follow);
   std::copy_n(tokens.begin() + follow, length, item.copyTokens.begin());
   item.copyLength = static_cast<uint32_t>(length);
-  if (const char *path = std::getenv("SPLASH_M5_COPY_DEBUG")) {  // "C id size length tokens..."
-    static FILE *debug = std::fopen(path, "a");
-    if (debug) {
-      std::fprintf(debug, "C %llu %zu %zu", static_cast<unsigned long long>(active.request.id), size, length);
-      for (size_t k = 0; k < length; ++k) std::fprintf(debug, " %u", item.copyTokens[k]);
-      std::fprintf(debug, "\n");
-      std::fflush(debug);
-    }
-  }
 }
 
 Engine::Prepared Engine::prepare(BatchPlan &plan, std::vector<ModelBatchItem> &items,

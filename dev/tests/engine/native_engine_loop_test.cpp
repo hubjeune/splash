@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -266,6 +267,38 @@ void testPowerKeepsPrefillDecomposition() {
   const std::vector<uint32_t> throttled = prefillCommands(50);
   require(!unthrottled.empty() && throttled == unthrottled,
           "the throttle changed the prefill command decomposition");
+}
+
+// The duty-cycle pause returns to the loop between bounded slices: one tick
+// does not hold the engine for a long command's whole owed sleep, so a cancel
+// queued between ticks is still serviced while the remainder is owed.
+void testPowerPauseKeepsTheLoopServicingFrames() {
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 8192;
+  config.engine.powerPercent = 1;
+  LoopFixture fixture(config, {.pages = 512});
+  engine::NativeRuntime &loop = fixture.loop;
+  Executor &executor = fixture.executor;
+  // 50 ms of measured work at power 1 owes 4.95 s: far more than one slice.
+  executor.heldCommandWorkMilliseconds = 50.0;
+  const auto commandsReady = executor.holdCommands();
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(1, 4))),
+          "power request failed");
+  require(loop.tick() && loop.commandInFlight(), "prefill was not submitted");
+  *commandsReady = true;
+  const auto start = std::chrono::steady_clock::now();
+  require(loop.tick() && !loop.commandInFlight(),
+          "the completed prefill did not return to the loop");
+  require(std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - start)
+                  .count() < 2000.0,
+          "one tick slept out the whole duty cycle");
+  require(loop.tick() && !loop.commandInFlight(),
+          "the engine ran the next command before paying the owed sleep");
+  require(loop.receive(protocol::peer::serialize(protocol::CancelFrame{1})),
+          "a cancel between duty-cycle slices was not serviced");
+  runUntilIdle(loop);
 }
 
 // /status active_requests: a live request's phase, prompt progress, output
@@ -2070,6 +2103,7 @@ int main() {
     testSamplingReachesTheModel();
     testPromptProgress();
     testPowerKeepsPrefillDecomposition();
+    testPowerPauseKeepsTheLoopServicingFrames();
     testCapacityFailureHasOneTerminalFrame();
     testFatalFramingClosesConnection();
     testInvalidLimitsAreRejectedAtConstruction();

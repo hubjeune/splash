@@ -470,11 +470,12 @@ public:
     } else if (plan.kind == WorkKind::Decode && holdDecodeUntil) {
       heldCompletion = std::move(completion);
       ticket = std::make_unique<HeldTicket>(decode(plan, items), holdDecodeUntil,
-                                            1.0);
+                                            heldCommandWorkMilliseconds);
     } else if (plan.kind == WorkKind::Prefill && holdPrefillUntil) {
       heldCompletion = std::move(completion);
       ticket = std::make_unique<HeldTicket>(prefill(plan, items),
-                                            holdPrefillUntil, 1.0);
+                                            holdPrefillUntil,
+                                            heldCommandWorkMilliseconds);
     } else {
       ticket = immediateTicket(plan.kind == WorkKind::Prefill ? prefill(plan, items)
                                                               : decode(plan, items),
@@ -707,6 +708,10 @@ public:
   bool firstTokens = false;
   std::shared_ptr<std::atomic<bool>> holdDecodeUntil;
   std::shared_ptr<std::atomic<bool>> holdPrefillUntil;
+  // The work interval every held command reports to the throttle and the
+  // request timing the completion applies. A duty-cycle test sets it long
+  // enough to owe more than one bounded pause slice.
+  double heldCommandWorkMilliseconds = 1.0;
   // The completion of the latest held command, for the test to call as
   // Metal's completion handler would.
   std::function<void()> heldCompletion;

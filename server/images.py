@@ -142,6 +142,10 @@ def prepare(payload: bytes, max_pixels: int = MAX_PIXELS) -> PreparedImage:
                     if image.width >= image.height
                     else (padded, image.height)
                 )
+                if size[0] * size[1] > max_pixels:
+                    raise ImageError(
+                        "image is too thin to pad within the serving pixel limit"
+                    )
                 canvas = Image.new("RGB", size, (255, 255, 255))
                 canvas.paste(
                     image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2)
