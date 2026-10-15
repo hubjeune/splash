@@ -291,3 +291,44 @@ class PromptTokenizationTests(unittest.TestCase):
         self.assertNotEqual(split, expected)
         self.assertEqual(cache.encode(prefix + tail), expected)
         self.assertEqual(cache.stats()["entries"], 0)
+
+
+class RestorePretokenizerTests(unittest.TestCase):
+    def test_restores_the_packages_pretokenizer_when_transformers_rebuilt_another(self):
+        import tempfile
+        from pathlib import Path
+
+        from server.tokenization import restore_pretokenizer
+
+        fast = tokenizer()
+        text = "Release notes e\u0301 中文 e\u0301 tail"
+        with tempfile.TemporaryDirectory() as directory:
+            fast.backend_tokenizer.save(str(Path(directory) / "tokenizer.json"))
+            expected = fast(text, add_special_tokens=False)["input_ids"]
+            # What transformers' Qwen2 rebuild leaves: the package's own split
+            # is replaced by one built from its pattern alone.
+            fast.backend_tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(
+                add_prefix_space=True
+            )
+            rebuilt = fast(text, add_special_tokens=False)["input_ids"]
+            self.assertNotEqual(rebuilt, expected)
+            self.assertTrue(restore_pretokenizer(fast, directory))
+            self.assertEqual(
+                fast(text, add_special_tokens=False)["input_ids"], expected
+            )
+            # A second run leaves the package's own pre-tokenizer alone.
+            self.assertFalse(restore_pretokenizer(fast, directory))
+
+    def test_a_missing_tokenizer_json_changes_nothing(self):
+        import tempfile
+
+        from server.tokenization import restore_pretokenizer
+
+        fast = tokenizer()
+        before = fast("Release notes e\u0301", add_special_tokens=False)["input_ids"]
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(restore_pretokenizer(fast, directory))
+        self.assertEqual(
+            fast("Release notes e\u0301", add_special_tokens=False)["input_ids"],
+            before,
+        )

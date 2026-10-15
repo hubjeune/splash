@@ -178,7 +178,13 @@ private:
         default: break;
         }
       }
-      std::this_thread::sleep_for(pace_);
+      // Measure the agent's pace off AwakeClock, not one sleep_for: macOS
+      // timer coalescing can grant a 20 ms sleep only after ~150 ms, which
+      // would make this a test of the host's timers rather than the
+      // handoff's bound. Short steps land within one scheduler tick of it.
+      const auto due = AwakeClock::now() + pace_;
+      while (AwakeClock::now() < due)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       job.event.signal(job.signal);
       report(job, true);
     }

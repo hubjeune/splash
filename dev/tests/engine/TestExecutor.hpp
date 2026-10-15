@@ -458,6 +458,11 @@ public:
   submit(const BatchPlan &plan, std::span<const ModelBatchItem> items,
          std::function<void()> completion) override {
     checkPageTables(items);
+    if (plan.kind == WorkKind::Decode)
+      for (const ModelBatchItem &item : items)
+        copyDrafts.insert_or_assign(
+            item.requestId,
+            CopyDraft{item.copyLength, item.copyTokens});
     std::unique_ptr<ModelBatchTicket> ticket;
     if (plan.kind == WorkKind::Decode && plan.constrained &&
         plan.decodeStage == DecodeStage::Regular) {
@@ -728,6 +733,14 @@ public:
   std::unordered_map<uint64_t, SamplingParameters> beganSampling;
   // The prefill steps each request took.
   std::unordered_map<uint64_t, uint32_t> prefillChunks;
+  // The copy-rule draft the engine gave each decode item, by request id:
+  // fillCopyDraft's continuation, as the runtime one-hot overrides DFlash's
+  // proposals with it (m5_copy_override).
+  struct CopyDraft {
+    uint32_t length = 0;
+    std::array<uint32_t, SPLASH_DRAFT_PROPOSAL_TOKENS + 1> tokens{};
+  };
+  std::unordered_map<uint64_t, CopyDraft> copyDrafts;
   // The tokens a decode step emits.
   uint32_t decodeTokens = 1;
   // The masks the model took.

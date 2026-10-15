@@ -269,6 +269,41 @@ void testPowerKeepsPrefillDecomposition() {
           "the throttle changed the prefill command decomposition");
 }
 
+// splash-m5 copy rule (TensorFold's): the decode that follows a request whose
+// last SPLASH_M5_COPY_MIN_MATCH committed tokens occurred earlier in the
+// request is drafted with the continuation of that occurrence, so a repeated
+// region verifies in one DFlash cycle. The engine hands the runtime the
+// copied tokens with a copy length; the runtime one-hot overrides the draft's
+// proposals with them.
+void testCopyRuleDraftsTheEarlierContinuation() {
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 8192;
+  LoopFixture fixture(config, {.pages = 512});
+  engine::NativeRuntime &loop = fixture.loop;
+  Executor &executor = fixture.executor;
+  loop.announceReady();
+  auto frame = request(1, 1);
+  frame.promptTokens.clear();
+  constexpr uint32_t kWindow = 16;
+  for (uint32_t i = 0; i < kWindow; ++i)
+    frame.promptTokens.push_back(101 + i);
+  for (uint32_t i = 0; i < 8; ++i)
+    frame.promptTokens.push_back(201 + i);
+  for (uint32_t i = 0; i < kWindow; ++i)
+    frame.promptTokens.push_back(101 + i);
+  require(loop.receive(protocol::peer::serialize(frame)),
+          "copy-rule request failed");
+  for (uint32_t step = 0; step < 16 && !executor.copyDrafts.contains(1); ++step)
+    static_cast<void>(loop.tick());
+  const auto found = executor.copyDrafts.find(1);
+  require(found != executor.copyDrafts.end() && found->second.length == 8,
+          "the decode after the repeated window carried no copied continuation");
+  for (uint32_t i = 0; i < 8; ++i)
+    require(found->second.tokens[i] == 201 + i,
+            "the copy rule drafted a token that does not follow the earlier occurrence");
+  runUntilIdle(loop);
+}
+
 // The duty-cycle pause returns to the loop between bounded slices: one tick
 // does not hold the engine for a long command's whole owed sleep, so a cancel
 // queued between ticks is still serviced while the remainder is owed.
@@ -2103,6 +2138,7 @@ int main() {
     testSamplingReachesTheModel();
     testPromptProgress();
     testPowerKeepsPrefillDecomposition();
+    testCopyRuleDraftsTheEarlierContinuation();
     testPowerPauseKeepsTheLoopServicingFrames();
     testCapacityFailureHasOneTerminalFrame();
     testFatalFramingClosesConnection();
