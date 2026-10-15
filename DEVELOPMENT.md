@@ -254,8 +254,10 @@ decoded output at decoding ties. Every level therefore dispatches exactly
 the prefill rows power 100 dispatches — `dev/tests/engine/native_engine_loop_test.cpp`
 holds it to that — and `make test-power-real` holds a real model's greedy
 text byte-identical between `--power 100` and `--power 50`, each level in a
-fresh server process. The sleep re-checks the process's shutdown predicate
-in bounded slices, so a stop signal is never held behind it.
+fresh server process. The sleep is paid in bounded slices that return to the
+engine loop, so a queued status or cancel frame is answered during a long
+command's pause, and each slice re-checks the process's shutdown predicate,
+so a stop signal is never held behind it either.
 
 ### SSD cache
 
@@ -1022,9 +1024,10 @@ Images arrive inline as base64 `data:` URLs: Chat `image_url` parts, Responses
 URL to fetch returns 400. JPEG, PNG, WebP and GIF decode. An image file may
 hold up to 32 MiB and 33,554,432 pixels, with an aspect ratio up to 200:1, and
 is resized to at most `--max-image-pixels` (4,194,304 by default). This fork
-pads a thinner strip onto a white canvas up to that guard instead of rejecting
-it: a rejected image stays in a client's conversation history and fails every
-later turn of it. A request
+pads a thinner strip onto a white canvas up to that guard instead of
+rejecting it, since a rejected image stays in a client's conversation
+history and fails every later turn of it; a strip whose padded canvas would
+exceed the pixel limit is still refused. A request
 carries at most 64 images, PDF pages included.
 
 PDFs arrive inline too: Chat `file` parts with `file_data`, Responses
