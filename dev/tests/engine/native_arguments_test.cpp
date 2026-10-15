@@ -155,7 +155,7 @@ void testServerCommandLines(const char *path) {
       // --power reaches the engine only when it is not the default, and
       // power 100, the unthrottled default, is the server's own default.
       {"power", [](NativeArguments &read) { read.powerPercent = 50; }},
-      {"power_default", [](NativeArguments &) {}}, 
+      {"power_default", [](NativeArguments &) {}},
       // A relaunch keeps the first engine's context; with --max-context,
       // which every start holds, its command is the first one's.
       {"relaunch", [](NativeArguments &read) { read.relaunchContext = 61433; }},
