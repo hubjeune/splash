@@ -11,25 +11,26 @@ import io
 import math
 import struct
 import threading
-from collections import OrderedDict
 from dataclasses import dataclass
+
+from .lru import LRUCache
 
 PATCH = 16
 MERGE = 2
 FACTOR = PATCH * MERGE
 # Qwen3-VL's shortest_edge floor; the serving cap below is far below the model's.
 MIN_PIXELS = 65_536
-# Qwen2-VL's smart-resize guard. prepare() pads narrower images up to it instead of
-# rejecting them: a rejected image stays in a client's history and fails every later turn.
+# Qwen's smart-resize guard. prepare() pads thinner images up to it instead of
+# rejecting them: a rejected image stays in a client's history and fails every
+# later turn of that conversation.
 MAX_ASPECT = 200
-# Serving default: the engine's vision scratch covers 16,384 patches.
+# Serving default and largest cap: 16,384 patches, the protocol's per-image ceiling.
 MAX_PIXELS = 4_194_304
 # Bound codec work before full-resolution decode, independently of the model's
 # resized input budget. Ordinary screenshots and up to 32 MP photos fit here.
 MAX_SOURCE_PIXELS = 32 * 1024 * 1024
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "GIF")
-DEFAULT_CACHE_BYTES = 256 * 1024 * 1024
 
 
 class ImageError(ValueError):
@@ -69,6 +70,12 @@ def decode_data_url(url) -> bytes:
     if len(raw) > MAX_IMAGE_BYTES:
         raise ImageError("image exceeds the size limit")
     return raw
+
+
+def max_patches(max_pixels: int) -> int:
+    """The most patches an image resized within max_pixels can have: its
+    sides are whole merge units, so its patch count is a multiple of 4."""
+    return max_pixels // (PATCH * PATCH) // 4 * 4
 
 
 def smart_resize(height: int, width: int, max_pixels: int) -> tuple[int, int]:
@@ -126,14 +133,19 @@ def prepare(payload: bytes, max_pixels: int = MAX_PIXELS) -> PreparedImage:
                 image = decoded.convert("RGB")
             long_side, short_side = max(image.size), min(image.size)
             if long_side > MAX_ASPECT * short_side:
-                # A thin strip (e.g. an accidental 8192 x 17 selection): centre it
-                # on white, as Qwen composites transparency, so it stays usable.
+                # A thin strip (for example an accidental 8192x17 selection):
+                # centre it on the white canvas, as the transparency composite
+                # does, so the image stays usable instead of failing the turn.
                 padded = -(-long_side // MAX_ASPECT)
                 size = (
                     (image.width, padded)
                     if image.width >= image.height
                     else (padded, image.height)
                 )
+                if size[0] * size[1] > max_pixels:
+                    raise ImageError(
+                        "image is too thin to pad within the serving pixel limit"
+                    )
                 canvas = Image.new("RGB", size, (255, 255, 255))
                 canvas.paste(
                     image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2)
@@ -169,7 +181,7 @@ class PreparedImages(list):
     def append(self, image):
         size = len(image.pixels)
         with self._cache._lock:
-            if size > self._cache.request_budget_bytes - self._cache._request_bytes:
+            if size > self._cache.REQUEST_BUDGET_BYTES - self._cache._request_bytes:
                 raise ImageCapacityError("in-flight image memory budget is full")
             self._cache._request_bytes += size
             self._bytes += size
@@ -183,20 +195,15 @@ class PreparedImages(list):
 class ImageCache:
     """Byte-budgeted LRU of prepared images keyed by the raw image bytes."""
 
-    def __init__(
-        self,
-        budget_bytes: int = DEFAULT_CACHE_BYTES,
-        request_budget_bytes: int = DEFAULT_CACHE_BYTES,
-    ):
-        if budget_bytes < 0 or request_budget_bytes <= 0:
-            raise ValueError("invalid image memory budget")
-        self.budget_bytes = budget_bytes
-        self.request_budget_bytes = request_budget_bytes
+    # Cached prepared images, and the images of requests in flight.
+    BUDGET_BYTES = 256 * 1024 * 1024
+    REQUEST_BUDGET_BYTES = 256 * 1024 * 1024
+
+    def __init__(self):
         # GC may finalize a cancelled batch during a cache insertion on this
         # same thread; returning its byte charge must not deadlock the cache.
         self._lock = threading.RLock()
-        self._entries: OrderedDict[bytes, PreparedImage] = OrderedDict()
-        self._bytes = 0
+        self._entries = LRUCache(self.BUDGET_BYTES)
         self._request_bytes = 0
 
     def request_batch(self):
@@ -206,27 +213,19 @@ class ImageCache:
         key = hashlib.sha256(struct.pack("<I", max_pixels) + payload).digest()
         with self._lock:
             cached = self._entries.get(key)
-            if cached is not None:
-                self._entries.move_to_end(key)
-                return cached
+        if cached is not None:
+            return cached
         prepared = prepare(payload, max_pixels)
-        if len(prepared.pixels) > self.budget_bytes:
-            return prepared
         with self._lock:
-            if key not in self._entries:
-                self._entries[key] = prepared
-                self._bytes += len(prepared.pixels)
-                while self._bytes > self.budget_bytes:
-                    _, evicted = self._entries.popitem(last=False)
-                    self._bytes -= len(evicted.pixels)
+            self._entries.put(key, prepared, len(prepared.pixels))
         return prepared
 
     def stats(self) -> dict:
         with self._lock:
             return {
                 "entries": len(self._entries),
-                "bytes": self._bytes,
-                "budget_bytes": self.budget_bytes,
+                "bytes": self._entries.bytes,
+                "budget_bytes": self._entries.budget_bytes,
                 "request_bytes": self._request_bytes,
-                "request_budget_bytes": self.request_budget_bytes,
+                "request_budget_bytes": self.REQUEST_BUDGET_BYTES,
             }

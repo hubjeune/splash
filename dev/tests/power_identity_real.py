@@ -99,7 +99,7 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     arguments = parse_args(argv)
-    smoke.hold_package(arguments)
+    smoke.hold_model_root(arguments)
     for prompt in arguments.prompt or DEFAULT_PROMPTS:
         run_prompt(arguments, prompt)
     print("power identity: PASS", flush=True)

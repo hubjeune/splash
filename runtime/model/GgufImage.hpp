@@ -1,6 +1,6 @@
 #pragma once
 
-// Plans the prepared images (model/GgufImageLayout.hpp) of a Qwen3.8 (qwen35)
+// Plans the images (model/GgufImageLayout.hpp) of a Qwen3.8 (qwen35)
 // or Qwen3.6 MoE (qwen35moe) target read straight from a llama.cpp GGUF, from
 // its metadata alone: section offsets, the header and descriptor bytes, and
 // the source rows each tensor section is written from
@@ -12,39 +12,15 @@
 #include <vector>
 
 #include "model/GgufFile.hpp"
+#include "model/GgufImageLayout.hpp"
+#include "model/QwenHybridLayout.hpp"
 
 namespace splash::model::gguf {
 
-struct TargetGeometry {
-  uint32_t layers = 0;
-  uint32_t hiddenSize = 0;
-  uint32_t vocabularySize = 0;
-  uint32_t intermediateSize = 0; // dense FFN
-  uint32_t gdnKeyHeads = 0;
-  uint32_t gdnValueHeads = 0;
-  uint32_t gdnHeadDimension = 0;
-  uint32_t convolutionDimension = 0;
-  uint32_t attentionWidth = 0;
-  uint32_t attentionKvHeads = 0;
-  uint32_t attentionHeadDimension = 0;
-  // The rotated dimension pairs of each attention head and their RoPE base.
-  uint32_t rotaryPairs = 0;
-  float rotaryTheta = 0.0F;
-  uint32_t fullAttentionPeriod = 0;
-  // A sparse MoE FFN (qwen35moe) when experts is set; the shared expert has
-  // the routed experts' intermediate width.
-  uint32_t experts = 0;
-  uint32_t expertsPerToken = 0;
-  uint32_t expertIntermediateSize = 0;
-  [[nodiscard]] bool isFullAttentionLayer(uint32_t layer) const noexcept {
-    return (layer + 1) % fullAttentionPeriod == 0;
-  }
-  [[nodiscard]] bool sparseMoe() const noexcept { return experts != 0; }
-  // The general.architecture of a GGUF of this target.
-  [[nodiscard]] const char *architecture() const noexcept {
-    return sparseMoe() ? "qwen35moe" : "qwen35";
-  }
-};
+// The general.architecture of a GGUF of a target with this FFN.
+[[nodiscard]] constexpr const char *architecture(QwenFfnKind ffn) noexcept {
+  return ffn == QwenFfnKind::SparseMoe ? "qwen35moe" : "qwen35";
+}
 
 // The order of a tensor's rows in the image. Rows below `from` keep their
 // order; from there on, blocks of headRows rows are value heads, which
@@ -57,14 +33,57 @@ struct RowOrder {
   uint32_t valueHeadsPerKey = 0;
 };
 
-// Rows [0, rows) of one source tensor in image order.
+// A quantized safetensors tensor's codes and scales, and an affine one's
+// biases, which the writer interleaves into the native rows of its format
+// (metal/abi/QuantFormat.h): per group an affine tensor's bf16 scale, its
+// bias and its codes, or an mxfp4 tensor's block_mxfp4, its E8M0 scale and
+// codes (GGUF_FMT_MXFP4); per 256 elements an nvfp4 tensor's E4M3 scales, its
+// row's tensor scale (TensorScale) and codes, or an fp8 tensor's row's tensor
+// scale and E4M3 values. Or a BF16 weight, which the writer quantizes into
+// native af4g64 rows as MLX's affine quantization rounds it (a DFlash2
+// draft's projections).
+struct SafetensorsSource {
+  const SourceTensor *codes = nullptr, *scales = nullptr, *biases = nullptr;
+  const SourceTensor *bfloat16 = nullptr;
+};
+// Whether a quantized safetensors tensor may be in a format: MLX affine,
+// mxfp4, nvfp4 or fp8.
+[[nodiscard]] constexpr bool safetensorsFormat(uint32_t format) {
+  return quant_loader_format(format) || format == GGUF_FMT_MXFP4;
+}
+
+// The tensor scale g of an nvfp4 or fp8 tensor's rows: the F32 or BF16 values
+// at `offset` of file's tensor data (`bytes` long), one for every
+// rowsPerValue rows, or their reciprocals. Model Optimizer's weight_scale_2 or
+// per-tensor fp8 weight_scale holds the tensor's g, compressed-tensors'
+// weight_global_scale its 1 / g and its per-channel fp8 weight_scale each
+// row's g [rows, 1], and a llama.cpp NVFP4 projection's .scale its g or
+// each expert's. Without one (rowsPerValue 0), as in MLX's nvfp4, g is 1.
+struct TensorScale {
+  const WeightSource *file = nullptr;
+  uint64_t offset = 0, bytes = 0;
+  uint64_t rowsPerValue = 0;
+  bool bfloat16 = false, reciprocal = false;
+};
+
+// Rows [first, first + rows) of one source tensor in image order, read from
+// `file`: rows of rowBytes bytes at `offset` of its tensor data, or its
+// format's native rows, which the writer builds from a quantized safetensors
+// tensor's tensors (safetensors.codes or safetensors.bfloat16 set) or from
+// llama.cpp's NVFP4 rows (ggufNvfp4RowBytes set: rows of block_nvfp4 that long
+// from `offset` on).
 struct TensorRows {
   std::string name;
-  uint32_t type = 0;   // ggml type
+  uint32_t type = 0;   // ggml type, or a loader's (metal/abi/QuantFormat.h)
   uint64_t offset = 0; // in the file's tensor data
   uint64_t rows = 0;
   uint64_t rowBytes = 0;
   RowOrder order{};
+  const WeightSource *file = nullptr;
+  SafetensorsSource safetensors{};
+  TensorScale scale{};
+  uint64_t ggufNvfp4RowBytes = 0;
+  uint64_t first = 0; // the source row of image row 0
 };
 
 // Header and descriptor bytes.
@@ -72,14 +91,23 @@ struct Fill {
   uint64_t offset = 0;
   std::vector<uint8_t> bytes;
 };
-// Rows written back to back as stored or, for F32 rows the kernels read as
-// bf16, as the bf16 values they equal exactly, or for BF16 rows the kernels
-// read as F32, as the F32 values they equal.
+// How a copy writes each value: as stored, narrowed from F32 to the bf16
+// value it equals exactly (rows the kernels read as bf16), widened from BF16
+// to the F32 value it equals (rows the kernels read as F32), as the F32 decay
+// -exp(A_log) of a safetensors GDN's A_log, BF16 or F32, which
+// float(-exp(double)) rounds once, as the F32 values of a quantized tensor's
+// native rows, which the GPU decodes as the format's gather does
+// (kernels/common/gguf_embedding_formats.h) and the kernels read unquantized
+// (a safetensors MoE router and shared-expert gate, GDN alpha and beta of two
+// types or of BF16 or F16), or as the F32 1 + w of a BF16 RMSNorm
+// weight w, which transformers stores 1 below the weight the norm multiplies
+// by (exact but where |w| < 2^-16 or |w| >= 2^24, which it may round once).
+enum class Conversion : uint8_t { None, NarrowToBfloat16, WidenToFloat32, Decay, DequantizeToFloat32, CenteredNorm };
+// Rows written back to back, each value converted as `conversion` says.
 struct Copy {
   uint64_t destination = 0;
   TensorRows source;
-  bool bfloat16 = false;
-  bool float32 = false;
+  Conversion conversion = Conversion::None;
 };
 // Quantized rows repacked into the planes of their format; the rows of the
 // sources in order, then zero rows up to `rows`.
@@ -92,6 +120,7 @@ struct Repack {
 };
 struct Image {
   std::string name; // layer-N.bin, head.bin, embedding.bin
+  std::string magic; // kGgufImageMagic
   uint32_t layer = 0;
   uint32_t type = 0;
   uint64_t bytes = 0;
@@ -100,10 +129,50 @@ struct Image {
   std::vector<Repack> repacks;
 };
 
+// The destination bytes of `sourceBytes` bytes of rows copied with
+// `conversion`: halved when narrowed, doubled when widened (and for the decay
+// of BF16 values and a centered norm), four per element when decoded to F32.
+[[nodiscard]] uint64_t convertedBytes(const TensorRows &source, Conversion conversion, uint64_t sourceBytes);
+
+// Lays out one image: its header block, then 16 KiB-aligned sections, each a
+// descriptor, copied rows or a quantized tensor's planes. The planners of a
+// GGUF target (planImages) and of a safetensors target
+// (model/SafetensorsImage.hpp) build their images with it.
+class ImageBuilder {
+public:
+  ImageBuilder(std::string name, uint32_t layer, uint32_t type);
+
+  // A section of `bytes` bytes after the last one, and its offset.
+  [[nodiscard]] uint64_t section(uint64_t bytes);
+  // Rows copied into a section of their own, converted as `conversion` says.
+  void copy(TensorRows source, Conversion conversion = Conversion::None);
+  // Rows copied to `destination`, inside a section already laid out.
+  void copyAt(uint64_t destination, TensorRows source, Conversion conversion);
+  // The descriptor of a tensor of `type`, quantized in `format` (a float or
+  // native-rows tensor has neither per-group nor meta bytes).
+  void descriptor(uint32_t type, uint64_t rows, uint64_t columns, const QuantFormat &format,
+                  const GgufPlaneBytes &bytes, const std::string &name);
+  // The descriptor and planes of a [rows, columns] tensor in format, whose
+  // sources the caller adds before repack() takes it.
+  [[nodiscard]] Repack planes(uint32_t format, uint64_t rows, uint64_t columns, const std::string &name);
+  void repack(Repack repack);
+  [[nodiscard]] Image finish();
+
+private:
+  Image image_;
+  uint64_t cursor_ = 0;
+};
+
+// The target geometry a GGUF's metadata declares, its architecture included,
+// with the rotary embedding and norms the kernels compute: the RoPE base and
+// rotated dimensions, the RMS epsilon and no RoPE scaling. planImages checks
+// the file's first, and model-check the installer's copy before any weight
+// download. Throws GgufError naming every mismatch.
+void requireMetadata(const GgufMetadata &metadata, const QwenTargetDimensions &geometry);
+
 // The layers' images, then the head's and the embedding's. Checks the
-// architecture, the geometry the metadata declares, its rotary embedding and
-// norms included, and each tensor's shape; throws GgufError naming every
-// missing tensor and every tensor of a type this build cannot load.
-[[nodiscard]] std::vector<Image> planImages(const GgufFile &file, const TargetGeometry &geometry);
+// metadata (requireMetadata) and each tensor's shape; throws GgufError naming
+// every missing tensor and every tensor of a type this build cannot load.
+[[nodiscard]] std::vector<Image> planImages(const GgufFile &file, const QwenTargetDimensions &geometry);
 
 } // namespace splash::model::gguf

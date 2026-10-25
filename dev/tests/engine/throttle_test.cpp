@@ -99,6 +99,47 @@ void testSleepMatchesTheDutyCycle() {
           "the sleep did not follow the duty-cycle formula");
 }
 
+void testPauseIsBoundedAndTheRemainderIsOwed() {
+  // 10 s of work at power 50 owes 10 s. One engine-loop iteration pays at
+  // most one bounded pause slice and carries the rest; the engine's later
+  // iterations pay that remainder, so frames are serviced between slices.
+  GpuThrottle throttle(50, [] { return false; });
+  const auto start = std::chrono::steady_clock::now();
+  throttle.noteWork(ThrottleWorkKind::Decode, 10000.0);
+  require(elapsedMilliseconds(start) < 3000.0,
+          "one engine-loop iteration slept the whole duty cycle");
+  require(closeTo(throttle.owedSleepMilliseconds(),
+                  10000.0 - kThrottlePauseSliceMilliseconds),
+          "the pause did not carry the duty cycle's remainder");
+  throttle.discardOwedSleep();
+  require(closeTo(throttle.owedSleepMilliseconds(), 0.0),
+          "the discarded remainder stayed owed");
+}
+
+void testOwedSleepSlicesDrain() {
+  // The second of two owed slices drains the remainder.
+  GpuThrottle throttle(50, [] { return false; });
+  throttle.noteWork(ThrottleWorkKind::Decode, 100.0);
+  require(closeTo(throttle.owedSleepMilliseconds(),
+                  100.0 - kThrottlePauseSliceMilliseconds),
+          "the pause did not carry the duty cycle's remainder");
+  require(closeTo(throttle.payOwedSleepSlice(), 0.0),
+          "the owed remainder did not drain");
+  require(closeTo(throttle.owedSleepMilliseconds(), 0.0),
+          "a drained remainder stayed owed");
+}
+
+void testPower100AndEmptyIntervalsOweNothing() {
+  GpuThrottle throttle(100, [] { return false; });
+  throttle.noteWork(ThrottleWorkKind::Prefill, 400.0);
+  require(closeTo(throttle.owedSleepMilliseconds(), 0.0),
+          "power 100 carried an owed sleep");
+  GpuThrottle throttled(50, [] { return false; });
+  throttled.noteWork(ThrottleWorkKind::Decode, 0.0);
+  require(closeTo(throttled.owedSleepMilliseconds(), 0.0),
+          "an empty work interval carried an owed sleep");
+}
+
 void testAverageSmoothsLikeDwarfStar4() {
   require(closeTo(throttleUpdateAverage(0.0, 8.0), 8.0),
           "the first sample did not seed the average");
@@ -149,6 +190,8 @@ void testStopRequestCutsTheSleepShort() {
     require(elapsed < 500.0,
             "a stop request did not cut the duty-cycle sleep short");
     require(calls >= 1, "the stop predicate was never consulted");
+    require(closeTo(throttle.owedSleepMilliseconds(), 0.0),
+            "a stop left an owed sleep to outlive it");
     if (stoppedAtEntry)
       require(elapsed < 50.0, "a sleep started after the stop was known");
   }
@@ -161,6 +204,9 @@ int main() {
     testPowerBounds();
     testUnthrottledIsANoOp();
     testSleepMatchesTheDutyCycle();
+    testPauseIsBoundedAndTheRemainderIsOwed();
+    testOwedSleepSlicesDrain();
+    testPower100AndEmptyIntervalsOweNothing();
     testAverageSmoothsLikeDwarfStar4();
     testStopRequestCutsTheSleepShort();
     std::cout << "power throttle tests passed\n";

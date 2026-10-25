@@ -2,18 +2,22 @@
 
 import json
 import os
+import re
 import sys
 import threading
 from array import array
-from collections import OrderedDict
+
+from .lru import LRUCache
 
 
 def restore_pretokenizer(tokenizer, source):
     """Put back the pre-tokenizer of the package's own tokenizer.json.
 
-    transformers' Qwen2Tokenizer rebuilds the pre-tokenizer from Qwen2's split pattern, which lacks the combining-mark
-    class (\\p{M}) of the Qwen3.x tokenizer.json: Hindi, Thai and vowelled Arabic then split into more tokens than the
-    model was trained on (e.g. 33 instead of 21 for a Hindi sentence). Returns True if it changed anything.
+    transformers' Qwen2Tokenizer rebuilds the pre-tokenizer from Qwen2's split
+    pattern, which lacks the combining-mark class (\\p{M}) of the Qwen3.x
+    tokenizer.json: Hindi, Thai and vowelled Arabic then split into more tokens
+    than the model was trained on (for example 33 instead of 21 for a Hindi
+    sentence). Returns True if it changed anything.
     """
     backend = getattr(tokenizer, "backend_tokenizer", None)
     if backend is None:
@@ -41,13 +45,25 @@ def restore_pretokenizer(tokenizer, source):
     return True
 
 
+# A surrogate code point. Request text keeps a lone one that JSON spells, such
+# as half of an emoji ("\ud83d") a client cut, but the tokenizer refuses any
+# text that holds one, and the request with it.
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def tokenizable(text):
+    """text with each surrogate code point as U+FFFD, as a UTF-8 decoder reads
+    an invalid byte. One character replaces one, so offsets into text hold."""
+    return _SURROGATE.sub("\ufffd", text)
+
+
 class PromptTokenizer:
     MARKER = "<|im_end|>"
     MIN_PREFIX_CHARS = 4096
+    BUDGET_BYTES = 8 * 1024 * 1024
+    CAPACITY = 4
 
-    def __init__(self, tokenizer, *, budget_bytes=8 * 1024 * 1024, capacity=4):
-        if budget_bytes <= 0 or capacity <= 0:
-            raise ValueError("tokenizer cache limits must be positive")
+    def __init__(self, tokenizer):
         self.tokenizer = tokenizer
         self.enabled = self._supports_boundaries(tokenizer)
         self.marker_id = (
@@ -55,10 +71,8 @@ class PromptTokenizer:
             if self.enabled
             else None
         )
-        self.budget_bytes = budget_bytes
-        self.capacity = capacity
-        self.entries = OrderedDict()
-        self.bytes = self.hits = self.reused_tokens = 0
+        self.entries = LRUCache(self.BUDGET_BYTES, self.CAPACITY)
+        self.hits = self.reused_tokens = 0
         self.lock = threading.Lock()
 
     @classmethod
@@ -107,7 +121,7 @@ class PromptTokenizer:
         )
 
     def _encode(self, text):
-        return self.tokenizer(text, add_special_tokens=False)["input_ids"]
+        return self.tokenizer(tokenizable(text), add_special_tokens=False)["input_ids"]
 
     def encode(self, text):
         boundary = text.rfind(self.MARKER)
@@ -125,7 +139,6 @@ class PromptTokenizer:
             )
             cached = self.entries.get(key)
             if cached is not None:
-                self.entries.move_to_end(key)
                 self.hits += 1
                 self.reused_tokens += len(cached) // array("I").itemsize
         tokens = array("I", cached).tolist() if cached is not None else []
@@ -135,34 +148,38 @@ class PromptTokenizer:
             # case this literal occurrence is not a tokenizer boundary.
             if not tokens or tokens[-1] != self.marker_id:
                 return self._encode(text)
-            packed = array("I", tokens).tobytes()
-            size = sys.getsizeof(prefix) + sys.getsizeof(packed)
-            if size <= self.budget_bytes:
+            token_bytes = array("I", tokens).tobytes()
+            size = sys.getsizeof(prefix) + sys.getsizeof(token_bytes)
+            if size <= self.BUDGET_BYTES:
                 with self.lock:
                     # An extension replaces its earlier prefix; unrelated
                     # concurrent conversations retain their own LRU entries.
-                    for old in {key, prefix}:
-                        previous = self.entries.pop(old, None)
-                        if previous is not None:
-                            self.bytes -= sys.getsizeof(old) + sys.getsizeof(previous)
-                    self.entries[prefix] = packed
-                    self.bytes += size
-                    while (
-                        self.bytes > self.budget_bytes
-                        or len(self.entries) > self.capacity
-                    ):
-                        old, previous = self.entries.popitem(last=False)
-                        self.bytes -= sys.getsizeof(old) + sys.getsizeof(previous)
+                    self.entries.pop(key)
+                    self.entries.put(prefix, token_bytes, size)
         return tokens + self._encode(text[boundary:])
+
+    def split(self, text):
+        """`text` cut just past its last MARKER where the tokenizer splits it
+        there: the tokens before the cut, and the text after it, which
+        encodes on its own. No tokens and all of `text` where it does not."""
+        boundary = text.rfind(self.MARKER)
+        if self.enabled and boundary >= 0:
+            boundary += len(self.MARKER)
+            head = self._encode(text[:boundary])
+            # As in encode, another added token may consume part of the
+            # marker, which is then no boundary.
+            if head and head[-1] == self.marker_id:
+                return head, text[boundary:]
+        return [], text
 
     def stats(self):
         with self.lock:
             return {
                 "enabled": self.enabled,
                 "entries": len(self.entries),
-                "bytes": self.bytes,
-                "budget_bytes": self.budget_bytes,
-                "capacity": self.capacity,
+                "bytes": self.entries.bytes,
+                "budget_bytes": self.entries.budget_bytes,
+                "capacity": self.entries.capacity,
                 "hits": self.hits,
                 "reused_tokens": self.reused_tokens,
             }
